@@ -1,8 +1,9 @@
 /**
- * Tennis & Padel Rules & Scoring Engine
+ * Tennis & Padel Rules & Scoring Engine PRO
  * Supports standard tennis (Deuce & Advantage), padel golden-point (punto de oro),
  * doubles (4 players with rotating service), mini-games (1 to 10+ games),
- * tiebreaks, super tiebreak, full undo/redo, and side change alerts.
+ * tiebreaks, super tiebreak, full undo/redo, rich point-by-point statistics,
+ * lossless JSON serialization (toJSON / toLightJSON / fromJSON), and side change alerts.
  */
 
 class MatchScorer {
@@ -12,27 +13,32 @@ class MatchScorer {
 
   init(config = {}) {
     this.sport = config.sport || 'padel'; // 'padel' or 'tennis'
-    this.mode = config.mode || 'singles'; // 'singles' or 'doubles'
-    this.id = config.id || null;
+    this.mode = config.mode || 'doubles'; // 'singles' or 'doubles'
+    this.id = config.id || ('m_' + Math.random().toString(36).substring(2, 10));
     this.tournament_id = config.tournament_id || null;
     this.tournament_match_id = config.tournament_match_id || null;
     this.tournament_name = config.tournament_name || '';
+    this.version = config.version || 1;
+    this.scored_by = config.scored_by || null; // { name, email, role }
+
+    const teamAObj = config.team_a || {};
+    const teamBObj = config.team_b || {};
 
     // Team A
     this.team_a = {
-      name: config.team_a_name || 'Tim A',
-      players: config.team_a_players || [], // [{ id, name, photo_url }, ...]
-      photo: config.team_a_photo || ''
+      name: config.team_a_name || teamAObj.name || 'Tim A',
+      players: config.team_a_players || teamAObj.players || [],
+      photo: config.team_a_photo || teamAObj.photo || ''
     };
 
     // Team B
     this.team_b = {
-      name: config.team_b_name || 'Tim B',
-      players: config.team_b_players || [], // [{ id, name, photo_url }, ...]
-      photo: config.team_b_photo || ''
+      name: config.team_b_name || teamBObj.name || 'Tim B',
+      players: config.team_b_players || teamBObj.players || [],
+      photo: config.team_b_photo || teamBObj.photo || ''
     };
 
-    // If doubles and player objects are passed, ensure players array has 2 slots if possible
+    // Ensure players array has 2 slots in doubles mode
     if (this.mode === 'doubles') {
       if (!this.team_a.players || this.team_a.players.length === 0) {
         this.team_a.players = [
@@ -46,51 +52,86 @@ class MatchScorer {
           { name: 'Pemain B2', photo_url: '' }
         ];
       }
+    } else {
+      if (!this.team_a.players || this.team_a.players.length === 0) {
+        this.team_a.players = [{ name: this.team_a.name, photo_url: this.team_a.photo || '' }];
+      }
+      if (!this.team_b.players || this.team_b.players.length === 0) {
+        this.team_b.players = [{ name: this.team_b.name, photo_url: this.team_b.photo || '' }];
+      }
     }
 
-    const defaultGames = config.rules?.games_per_set ?? (this.sport === 'padel' ? 6 : 6);
+    const defaultGames = config.rules?.games_per_set ?? 6;
 
     this.rules = {
-      sets_to_win: config.rules?.sets_to_win ?? 2,          // best of 3 (needs 2 sets to win)
-      games_per_set: defaultGames,                          // e.g. 1 (mini), 3, 4, 6, 8, etc.
-      golden_point: config.rules?.golden_point ?? false,    // default false so Deuce is standard!
-      tiebreak_at: config.rules?.tiebreak_at ?? defaultGames, // tiebreak at target games (e.g. 6-6 or 3-3)
-      tiebreak_points: config.rules?.tiebreak_points ?? 7,  // 7 pt tiebreak
+      sets_to_win: config.rules?.sets_to_win ?? 2,
+      games_per_set: defaultGames,
+      golden_point: config.rules?.golden_point ?? false,
+      tiebreak_at: config.rules?.tiebreak_at ?? defaultGames,
+      tiebreak_points: config.rules?.tiebreak_points ?? 7,
       final_set_super_tiebreak: config.rules?.final_set_super_tiebreak ?? false
     };
 
     // Live match state
-    this.sets_history = []; // [{ team_a: 6, team_b: 4, tiebreak_a: 7, tiebreak_b: 5, winner: 'team_a' }, ...]
-    this.current_set_games = { team_a: 0, team_b: 0 };
-    this.current_points = { team_a: 0, team_b: 0 }; // 0=0, 1=15, 2=30, 3=40, 4=AD
-    this.tiebreak_points = { team_a: 0, team_b: 0 };
+    this.sets_history = Array.isArray(config.sets_history) ? JSON.parse(JSON.stringify(config.sets_history)) : [];
+    this.current_set_games = config.current_set_games ? { ...config.current_set_games } : { team_a: 0, team_b: 0 };
+    this.current_points = config.current_points ? { ...config.current_points } : { team_a: 0, team_b: 0 };
+    this.tiebreak_points = config.tiebreak_points ? { ...config.tiebreak_points } : { team_a: 0, team_b: 0 };
 
-    this.is_tiebreak = false;
-    this.is_super_tiebreak = false;
-    
+    this.is_tiebreak = !!config.is_tiebreak;
+    this.is_super_tiebreak = !!config.is_super_tiebreak;
+
     // Server tracking: team and individual player index for doubles
-    this.server = config.initial_server || 'team_a'; // 'team_a' or 'team_b'
-    this.server_start_of_game = this.server;
-    this.server_player_index = { team_a: 0, team_b: 0 }; // 0 or 1 for doubles
-    
+    this.server = config.server || config.initial_server || 'team_a';
+    this.server_start_of_game = config.server_start_of_game || this.server;
+    this.server_player_index = config.server_player_index
+      ? { ...config.server_player_index }
+      : { team_a: 0, team_b: 0 };
+
     this.winner = config.winner || null;
-    this.is_completed = config.is_completed || false;
-    this.win_type = config.win_type || null;     // 'walkover' | 'disqualification' | 'retired'
-    this.win_reason = config.win_reason || '';   // e.g. 'Lawan Diskualifikasi (DQ)'
-    this.court_id = config.court_id || 'court_1'; // Lapangan 1 or Lapangan 2
-    this.start_time = new Date();
-    this.end_time = null;
-    this.duration_minutes = 0;
+    this.is_completed = !!(config.is_completed || config.status === 'completed');
+    this.win_type = config.win_type || null; // 'walkover' | 'disqualification' | 'retired'
+    this.win_reason = config.win_reason || '';
+    this.court_id = config.court_id || 'court_1';
+    this.start_time = config.start_time ? new Date(config.start_time) : new Date();
+    this.end_time = config.end_time ? new Date(config.end_time) : null;
+    this.duration_minutes = config.duration_minutes || 0;
+    this.duration_seconds = config.duration_seconds || 0;
+
+    // Detailed Match Analytics
+    this.stats = config.stats ? { ...config.stats } : {
+      total_points_a: 0,
+      total_points_b: 0,
+      deuces_count: 0,
+      golden_points_count: 0,
+      service_games_won_a: 0,
+      service_games_won_b: 0,
+      breaks_won_a: 0,
+      breaks_won_b: 0,
+      max_streak_a: 0,
+      max_streak_b: 0,
+      current_streak_a: 0,
+      current_streak_b: 0
+    };
+
+    this.point_log = Array.isArray(config.point_log) ? [...config.point_log] : [];
 
     // History stack for Undo/Redo
     this.history = [];
     this.redoStack = [];
 
     // Notifications
-    this.side_switch_alert = false;
+    this.side_switch_alert = !!config.side_switch_alert;
   }
 
-  // Clone current snapshot
+  static fromJSON(data = {}) {
+    if (!data || typeof data !== 'object') {
+      return new MatchScorer();
+    }
+    return new MatchScorer(data);
+  }
+
+  // Clone current snapshot for Undo/Redo
   getSnapshot() {
     return {
       sets_history: JSON.parse(JSON.stringify(this.sets_history)),
@@ -108,7 +149,9 @@ class MatchScorer {
       win_type: this.win_type,
       win_reason: this.win_reason,
       court_id: this.court_id,
-      side_switch_alert: this.side_switch_alert
+      side_switch_alert: this.side_switch_alert,
+      stats: { ...this.stats },
+      point_log: JSON.parse(JSON.stringify(this.point_log))
     };
   }
 
@@ -129,12 +172,16 @@ class MatchScorer {
     this.win_reason = snap.win_reason || '';
     this.court_id = snap.court_id || 'court_1';
     this.side_switch_alert = snap.side_switch_alert;
+    if (snap.stats) this.stats = { ...snap.stats };
+    if (snap.point_log) this.point_log = JSON.parse(JSON.stringify(snap.point_log));
+    this.version++;
   }
 
   pushHistory() {
     this.history.push(this.getSnapshot());
-    if (this.history.length > 50) this.history.shift();
+    if (this.history.length > 60) this.history.shift();
     this.redoStack = [];
+    this.version++;
   }
 
   undo() {
@@ -142,6 +189,7 @@ class MatchScorer {
     this.redoStack.push(this.getSnapshot());
     const prev = this.history.pop();
     this.restoreSnapshot(prev);
+    window.soundEngine?.playUndoBeep();
     return true;
   }
 
@@ -150,14 +198,48 @@ class MatchScorer {
     this.history.push(this.getSnapshot());
     const next = this.redoStack.pop();
     this.restoreSnapshot(next);
+    window.soundEngine?.playPointBeep();
     return true;
+  }
+
+  resetMatch() {
+    this.pushHistory();
+    this.sets_history = [];
+    this.current_set_games = { team_a: 0, team_b: 0 };
+    this.current_points = { team_a: 0, team_b: 0 };
+    this.tiebreak_points = { team_a: 0, team_b: 0 };
+    this.is_tiebreak = false;
+    this.is_super_tiebreak = false;
+    this.winner = null;
+    this.is_completed = false;
+    this.win_type = null;
+    this.win_reason = '';
+    this.side_switch_alert = false;
+    this.start_time = new Date();
+    this.end_time = null;
+    this.duration_minutes = 0;
+    this.duration_seconds = 0;
+    this.stats = {
+      total_points_a: 0,
+      total_points_b: 0,
+      deuces_count: 0,
+      golden_points_count: 0,
+      service_games_won_a: 0,
+      service_games_won_b: 0,
+      breaks_won_a: 0,
+      breaks_won_b: 0,
+      max_streak_a: 0,
+      max_streak_b: 0,
+      current_streak_a: 0,
+      current_streak_b: 0
+    };
+    this.point_log = [];
   }
 
   // Toggle serving team or individual server in doubles
   toggleServer() {
     this.pushHistory();
     if (this.mode === 'doubles') {
-      // In doubles, rotate server among the 4 players: A1 -> B1 -> A2 -> B2
       if (this.server === 'team_a') {
         this.server = 'team_b';
       } else {
@@ -185,15 +267,19 @@ class MatchScorer {
     this.pushHistory();
     this.is_tiebreak = false;
     this.current_points = { team_a: 3, team_b: 3 }; // 40 - 40
+    if (this.rules.golden_point) {
+      this.stats.golden_points_count = (this.stats.golden_points_count || 0) + 1;
+    } else {
+      this.stats.deuces_count = (this.stats.deuces_count || 0) + 1;
+    }
     window.soundEngine?.playPointBeep();
-    window.soundEngine?.speak("Deuce!");
+    window.soundEngine?.speak(this.rules.golden_point ? 'Punto de Oro! Golden Point!' : 'Deuce!');
   }
 
   // Toggle Golden Point on the fly
   toggleGoldenPoint() {
     this.pushHistory();
     this.rules.golden_point = !this.rules.golden_point;
-    // If currently at Advantage (4) and switching to Golden Point, drop back to 40 (3)
     if (this.rules.golden_point) {
       if (this.current_points.team_a === 4) this.current_points.team_a = 3;
       if (this.current_points.team_b === 4) this.current_points.team_b = 3;
@@ -217,12 +303,44 @@ class MatchScorer {
 
     window.soundEngine?.playPointBeep();
 
+    // Update Point & Streak Analytics
+    if (team === 'team_a') {
+      this.stats.total_points_a = (this.stats.total_points_a || 0) + 1;
+      this.stats.current_streak_a = (this.stats.current_streak_a || 0) + 1;
+      this.stats.current_streak_b = 0;
+      if (this.stats.current_streak_a > (this.stats.max_streak_a || 0)) {
+        this.stats.max_streak_a = this.stats.current_streak_a;
+      }
+    } else {
+      this.stats.total_points_b = (this.stats.total_points_b || 0) + 1;
+      this.stats.current_streak_b = (this.stats.current_streak_b || 0) + 1;
+      this.stats.current_streak_a = 0;
+      if (this.stats.current_streak_b > (this.stats.max_streak_b || 0)) {
+        this.stats.max_streak_b = this.stats.current_streak_b;
+      }
+    }
+
     const otherTeam = team === 'team_a' ? 'team_b' : 'team_a';
 
     if (this.is_tiebreak || this.is_super_tiebreak) {
       this.handleTiebreakPoint(team, otherTeam);
     } else {
       this.handleRegularPoint(team, otherTeam);
+    }
+
+    // Record to point log (keep last 80 points for timeline analysis)
+    this.point_log.push({
+      t: new Date().toISOString().substring(11, 19),
+      team,
+      pt_a: this.getDisplayPoint('team_a'),
+      pt_b: this.getDisplayPoint('team_b'),
+      gm_a: this.current_set_games.team_a,
+      gm_b: this.current_set_games.team_b,
+      set_a: this.getSetsWon('team_a'),
+      set_b: this.getSetsWon('team_b')
+    });
+    if (this.point_log.length > 80) {
+      this.point_log.shift();
     }
   }
 
@@ -232,18 +350,22 @@ class MatchScorer {
 
     // 1. Check Golden Point (No-Ad at 40-40)
     if (this.rules.golden_point && ptTeam === 3 && ptOther === 3) {
-      // Punto de oro: next point directly wins the game!
       this.winGame(team);
       return;
     }
 
     // 2. Standard Tennis / Advantage scoring
     if (ptTeam === 3 && ptOther < 3) {
-      // 40-0, 40-15, 40-30 -> Game
       this.winGame(team);
     } else if (ptTeam < 3 && ptOther === 3) {
-      // Team advancing to 40-30, 40-15...
       this.current_points[team]++;
+      if (this.current_points.team_a === 3 && this.current_points.team_b === 3) {
+        if (this.rules.golden_point) {
+          this.stats.golden_points_count = (this.stats.golden_points_count || 0) + 1;
+        } else {
+          this.stats.deuces_count = (this.stats.deuces_count || 0) + 1;
+        }
+      }
       this.announceCurrentScore();
     } else if (ptTeam === 3 && ptOther === 3) {
       // 40-40 (DEUCE) -> Team gains ADVANTAGE (pt = 4)
@@ -255,6 +377,7 @@ class MatchScorer {
     } else if (ptOther === 4) {
       // Opponent had Advantage -> back to DEUCE (3 - 3)!
       this.current_points[otherTeam] = 3;
+      this.stats.deuces_count = (this.stats.deuces_count || 0) + 1;
       this.announceCurrentScore();
     } else {
       // 0->15->30->40
@@ -270,7 +393,7 @@ class MatchScorer {
     const scoreB = this.tiebreak_points.team_b;
     const totalPts = scoreA + scoreB;
 
-    // Service rotation in tiebreak: ABBA (first point by initial server, then every 2 points it rotates)
+    // Service rotation in tiebreak: ABBA
     if (totalPts % 2 === 1) {
       this.server = this.server === 'team_a' ? 'team_b' : 'team_a';
       if (this.mode === 'doubles') {
@@ -284,12 +407,10 @@ class MatchScorer {
       window.soundEngine?.announceSideSwitch();
     }
 
-    // Check tiebreak win condition (at least target points and 2-point lead)
     const ptsTeam = this.tiebreak_points[team];
     const ptsOther = this.tiebreak_points[otherTeam];
 
     if (ptsTeam >= target && (ptsTeam - ptsOther) >= 2) {
-      // Won tiebreak!
       this.current_set_games[team]++;
       this.winSet(team, true);
     } else {
@@ -309,6 +430,15 @@ class MatchScorer {
     this.current_points = { team_a: 0, team_b: 0 };
     this.current_set_games[team]++;
 
+    // Track service hold vs break of serve
+    if (this.server === team) {
+      if (team === 'team_a') this.stats.service_games_won_a = (this.stats.service_games_won_a || 0) + 1;
+      else this.stats.service_games_won_b = (this.stats.service_games_won_b || 0) + 1;
+    } else {
+      if (team === 'team_a') this.stats.breaks_won_a = (this.stats.breaks_won_a || 0) + 1;
+      else this.stats.breaks_won_b = (this.stats.breaks_won_b || 0) + 1;
+    }
+
     const teamWinnerName = team === 'team_a' ? this.team_a.name : this.team_b.name;
     const gamesA = this.current_set_games.team_a;
     const gamesB = this.current_set_games.team_b;
@@ -320,7 +450,6 @@ class MatchScorer {
         this.server_start_of_game = 'team_b';
       } else {
         this.server_start_of_game = 'team_a';
-        // Toggle individual server index for next rotation
         this.server_player_index.team_a = this.server_player_index.team_a === 0 ? 1 : 0;
         this.server_player_index.team_b = this.server_player_index.team_b === 0 ? 1 : 0;
       }
@@ -345,8 +474,7 @@ class MatchScorer {
       return;
     }
 
-    // 2. Standard or Custom games per set (e.g. 2, 3, 4, 6, 8)
-    // Lead by 2 when reaching target (e.g. 6-4, 6-3, 3-1, 4-2)
+    // 2. Standard or Custom games per set (lead by 2 when reaching target)
     if (gamesWinner >= targetGames && (gamesWinner - gamesLoser) >= 2) {
       this.winSet(team, false);
       return;
@@ -364,21 +492,20 @@ class MatchScorer {
       this.tiebreak_points = { team_a: 0, team_b: 0 };
       window.soundEngine?.announceGame(teamWinnerName, gamesA, gamesB);
       setTimeout(() => {
-        window.soundEngine?.speak(window.soundEngine.voiceLang === 'id-ID' ? "Memasuki Tie-break!" : "Entering Tie-break!");
-      }, 1200);
+        window.soundEngine?.speak(window.soundEngine.voiceLang === 'id-ID' ? 'Memasuki Tie-break!' : 'Entering Tie-break!');
+      }, 900);
       return;
     }
 
     window.soundEngine?.announceGame(teamWinnerName, gamesA, gamesB);
     if (this.side_switch_alert) {
-      setTimeout(() => window.soundEngine?.announceSideSwitch(), 1200);
+      setTimeout(() => window.soundEngine?.announceSideSwitch(), 950);
     }
   }
 
   winSet(team, wasTiebreak = false) {
     const winnerName = team === 'team_a' ? this.team_a.name : this.team_b.name;
-    
-    // Record to history
+
     const setRecord = {
       team_a: this.current_set_games.team_a,
       team_b: this.current_set_games.team_b,
@@ -394,11 +521,9 @@ class MatchScorer {
     this.tiebreak_points = { team_a: 0, team_b: 0 };
     this.is_tiebreak = false;
 
-    // Count sets won
     const setsWonA = this.sets_history.filter(s => s.winner === 'team_a').length;
     const setsWonB = this.sets_history.filter(s => s.winner === 'team_b').length;
 
-    // Check match win
     const setsNeeded = this.rules.sets_to_win;
     if (setsWonA >= setsNeeded) {
       this.finishMatch('team_a');
@@ -408,7 +533,6 @@ class MatchScorer {
       return;
     }
 
-    // Check deciding final set super tiebreak rule
     const currentSetIndex = this.sets_history.length + 1;
     const totalSetsBestOf = setsNeeded * 2 - 1;
     if (this.rules.final_set_super_tiebreak && currentSetIndex === totalSetsBestOf) {
@@ -435,7 +559,7 @@ class MatchScorer {
     this.winner = winnerTeam;
     this.is_completed = true;
     this.win_type = reasonType;
-    
+
     let defaultReason = 'Walkover (W.O.)';
     if (reasonType === 'disqualification') defaultReason = 'Diskualifikasi (DQ)';
     else if (reasonType === 'retired') defaultReason = 'Mundur / Cedera (RET)';
@@ -445,10 +569,9 @@ class MatchScorer {
     this.end_time = new Date();
     this.duration_minutes = Math.max(1, Math.round((this.end_time - this.start_time) / 60000));
 
-    // If sets history is empty or match was in progress, record special set badge
     const winLabel = winnerTeam === 'team_a' ? 'W' : 'Gugur';
     const loseLabel = winnerTeam === 'team_b' ? 'W' : 'Gugur';
-    
+
     if (this.sets_history.length === 0) {
       this.sets_history.push({
         team_a: winLabel,
@@ -457,7 +580,6 @@ class MatchScorer {
         note: this.win_reason
       });
     } else {
-      // Append current unfinished set note
       this.sets_history.push({
         team_a: `${this.current_set_games.team_a} (${winLabel})`,
         team_b: `${this.current_set_games.team_b} (${loseLabel})`,
@@ -485,9 +607,9 @@ class MatchScorer {
 
   getDisplayPoint(team) {
     if (this.is_tiebreak || this.is_super_tiebreak) {
-      return this.tiebreak_points[team].toString();
+      return (this.tiebreak_points[team] || 0).toString();
     }
-    const pt = this.current_points[team];
+    const pt = this.current_points[team] || 0;
     if (pt === 0) return '0';
     if (pt === 1) return '15';
     if (pt === 2) return '30';
@@ -526,42 +648,93 @@ class MatchScorer {
     return this.sets_history.filter(s => s.winner === team).length;
   }
 
-  // Get active server player object (for doubles)
   getActiveServerPlayer() {
     const team = this.server;
     const teamObj = team === 'team_a' ? this.team_a : this.team_b;
     if (this.mode === 'doubles' && teamObj.players && teamObj.players.length > 0) {
-      const idx = this.server_player_index[team] % teamObj.players.length;
+      const idx = (this.server_player_index[team] || 0) % teamObj.players.length;
       return teamObj.players[idx];
     }
     return teamObj.players?.[0] || { name: teamObj.name };
   }
 
   toJSON() {
+    const setsWonA = this.getSetsWon('team_a');
+    const setsWonB = this.getSetsWon('team_b');
     return {
       id: this.id,
+      version: this.version,
       tournament_id: this.tournament_id,
       tournament_match_id: this.tournament_match_id,
       tournament_name: this.tournament_name,
       court_id: this.court_id || 'court_1',
       date: new Date().toISOString().replace('T', ' ').substring(0, 19),
+      updated_at_ms: Date.now(),
       name: `${this.team_a.name} vs ${this.team_b.name}`,
       sport: this.sport,
       mode: this.mode,
       team_a_name: this.team_a.name,
       team_b_name: this.team_b.name,
-      team_a_player_ids: this.team_a.players.map(p => p.id || p.name || 'player_a'),
-      team_b_player_ids: this.team_b.players.map(p => p.id || p.name || 'player_b'),
-      team_a_players: this.team_a.players,
-      team_b_players: this.team_b.players,
-      rules: this.rules,
+      team_a_photo: this.team_a.photo || '',
+      team_b_photo: this.team_b.photo || '',
+      team_a: this.team_a,
+      team_b: this.team_b,
+      team_a_player_ids: (this.team_a.players || []).map(p => p.id || p.name || 'player_a'),
+      team_b_player_ids: (this.team_b.players || []).map(p => p.id || p.name || 'player_b'),
+      team_a_players: this.team_a.players || [],
+      team_b_players: this.team_b.players || [],
+      rules: { ...this.rules },
       sets_history: this.sets_history,
+      current_set_games: { ...this.current_set_games },
+      current_points: { ...this.current_points },
+      tiebreak_points: { ...this.tiebreak_points },
+      is_tiebreak: this.is_tiebreak,
+      is_super_tiebreak: this.is_super_tiebreak,
+      server: this.server,
+      server_start_of_game: this.server_start_of_game,
+      server_player_index: { ...this.server_player_index },
+      sets_won: { team_a: setsWonA, team_b: setsWonB },
+      display_point_a: this.getDisplayPoint('team_a'),
+      display_point_b: this.getDisplayPoint('team_b'),
+      side_switch_alert: this.side_switch_alert,
+      stats: { ...this.stats },
+      point_log: this.point_log,
+      scored_by: this.scored_by,
       winner: this.winner,
+      is_completed: this.is_completed,
       win_type: this.win_type || null,
       win_reason: this.win_reason || '',
       status: this.is_completed ? 'completed' : 'in_progress',
-      duration_minutes: this.duration_minutes || 1
+      duration_minutes: this.duration_minutes || Math.max(1, Math.round((this.duration_seconds || 0) / 60)),
+      duration_seconds: this.duration_seconds || 0
     };
+  }
+
+  // Lightweight JSON payload for real-time court sync (strips heavy base64 audio/images)
+  toLightJSON() {
+    const full = this.toJSON();
+    const stripHeavy = (p) => {
+      if (!p) return p;
+      const copy = { ...p };
+      if (copy.slogan_audio_url && copy.slogan_audio_url.startsWith('data:')) {
+        copy.slogan_audio_url = '';
+      }
+      if (copy.photo_url && copy.photo_url.length > 4000) {
+        copy.photo_url = '';
+      }
+      return copy;
+    };
+    full.team_a_players = (full.team_a_players || []).map(stripHeavy);
+    full.team_b_players = (full.team_b_players || []).map(stripHeavy);
+    if (full.team_a && full.team_a.players) {
+      full.team_a = { ...full.team_a, players: full.team_a.players.map(stripHeavy) };
+    }
+    if (full.team_b && full.team_b.players) {
+      full.team_b = { ...full.team_b, players: full.team_b.players.map(stripHeavy) };
+    }
+    if (full.team_a_photo && full.team_a_photo.length > 4000) full.team_a_photo = '';
+    if (full.team_b_photo && full.team_b_photo.length > 4000) full.team_b_photo = '';
+    return full;
   }
 }
 

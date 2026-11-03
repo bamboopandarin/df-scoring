@@ -1,4 +1,4 @@
-/* Custom CSS for Padel & Tennis Scoring Master */
+/* Custom CSS for DF Scoring PRO — Padel & Tennis Scoring & Tournament Master */
 :root {
   --primary: #10b981;
   --primary-dark: #047857;
@@ -11,10 +11,24 @@
   --border-dark: #334155;
 }
 
-body {
+* {
+  box-sizing: border-box;
+}
+
+html, body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   -webkit-tap-highlight-color: transparent;
   user-select: none;
+  touch-action: manipulation;
+  overscroll-behavior-y: none;
+}
+
+input, textarea, select {
+  user-select: text;
+}
+
+button, a, select, label {
+  touch-action: manipulation;
 }
 
 /* Custom scrollbars */
@@ -23,14 +37,14 @@ body {
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.1);
+  background: rgba(0, 0, 0, 0.12);
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.22);
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.38);
 }
 
 /* Pulsing server tennis ball */
@@ -40,23 +54,42 @@ body {
     filter: drop-shadow(0 0 4px #ccff00);
   }
   50% {
-    transform: scale(1.18);
+    transform: scale(1.16);
     filter: drop-shadow(0 0 10px #ccff00);
   }
 }
 
 .serving-ball {
   animation: ballPulse 1.8s infinite ease-in-out;
+  will-change: transform;
+}
+
+/* Instant GPU-accelerated score pop animation on point tap */
+@keyframes scorePop {
+  0% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(1.16);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.score-pop {
+  animation: scorePop 0.18s cubic-bezier(0.34, 1.56, 0.64, 1);
+  will-change: transform;
 }
 
 /* Golden Point Glow */
 @keyframes goldPulse {
   0%, 100% {
-    box-shadow: 0 0 15px rgba(234, 179, 8, 0.6);
+    box-shadow: 0 0 15px rgba(234, 179, 8, 0.55);
     border-color: #eab308;
   }
   50% {
-    box-shadow: 0 0 30px rgba(234, 179, 8, 0.9);
+    box-shadow: 0 0 28px rgba(234, 179, 8, 0.85);
     border-color: #fef08a;
   }
 }
@@ -68,11 +101,11 @@ body {
 /* Deuce Glow */
 @keyframes deucePulse {
   0%, 100% {
-    box-shadow: 0 0 15px rgba(56, 189, 248, 0.6);
+    box-shadow: 0 0 15px rgba(56, 189, 248, 0.55);
     border-color: #38bdf8;
   }
   50% {
-    box-shadow: 0 0 30px rgba(56, 189, 248, 0.9);
+    box-shadow: 0 0 28px rgba(56, 189, 248, 0.85);
     border-color: #bae6fd;
   }
 }
@@ -86,8 +119,8 @@ body {
   display: flex;
   overflow-x: auto;
   padding: 1.5rem 0.5rem;
-  gap: 3rem;
-  min-height: 480px;
+  gap: 2.5rem;
+  min-height: 460px;
 }
 
 .bracket-round {
@@ -102,17 +135,16 @@ body {
   position: relative;
   background: #1e293b;
   border: 1px solid #334155;
-  border-radius: 0.75rem;
-  padding: 0.75rem;
-  margin: 1rem 0;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
-  transition: all 0.2s ease;
+  border-radius: 0.85rem;
+  padding: 0.85rem;
+  margin: 0.75rem 0;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.25);
+  transition: transform 0.15s ease, border-color 0.15s ease;
 }
 
 .bracket-match:hover {
   border-color: #10b981;
   transform: translateY(-2px);
-  box-shadow: 0 8px 15px -3px rgba(16, 185, 129, 0.2);
 }
 
 .bracket-match.in-progress {
@@ -128,15 +160,18 @@ body {
 .score-digit {
   font-family: 'Chakra Petch', 'Orbitron', 'Impact', sans-serif;
   letter-spacing: 1px;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
 }
 
-/* Touch active scale effect */
+/* Touch active scale effect — ultra-responsive 40ms feedback */
 .btn-touch {
-  transition: transform 0.08s ease, filter 0.08s ease;
+  transition: transform 0.05s ease-out, filter 0.05s ease-out;
+  will-change: transform;
 }
 .btn-touch:active {
-  transform: scale(0.96);
-  filter: brightness(0.9);
+  transform: scale(0.965);
+  filter: brightness(1.08);
 }
 
 /* Doubles Dual Avatar Layout */
@@ -146,21 +181,48 @@ body {
   position: relative;
 }
 .doubles-avatar-wrap img:nth-child(2) {
-  margin-left: -1rem;
+  margin-left: -0.9rem;
   border: 2px solid #0f172a;
 }
 
 /* High contrast mode for outdoor sunlight */
 body.sunlight-mode {
-  background-color: #f8fafc !important;
+  background-color: #f1f5f9 !important;
+  color: #0f172a !important;
+}
+body.sunlight-mode header {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  color: #0f172a !important;
+}
+body.sunlight-mode header h1 {
   color: #0f172a !important;
 }
 body.sunlight-mode .card-sunlight {
   background-color: #ffffff !important;
   color: #0f172a !important;
-  border-color: #cbd5e1 !important;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1) !important;
+  border-color: #94a3b8 !important;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08) !important;
 }
-body.sunlight-mode .text-sunlight-invert {
+body.sunlight-mode .card-sunlight h2,
+body.sunlight-mode .card-sunlight h3,
+body.sunlight-mode .card-sunlight h4 {
   color: #0f172a !important;
+}
+body.sunlight-mode .card-sunlight .bg-slate-950\/80,
+body.sunlight-mode .card-sunlight .bg-slate-950 {
+  background-color: #f8fafc !important;
+  border-color: #cbd5e1 !important;
+}
+body.sunlight-mode #score-games-a,
+body.sunlight-mode #score-games-b {
+  color: #0f172a !important;
+}
+body.sunlight-mode #digit-point-a,
+body.sunlight-mode #digit-point-b {
+  color: #047857 !important;
+}
+body.sunlight-mode #score-sets-a,
+body.sunlight-mode #score-sets-b {
+  color: #b45309 !important;
 }
