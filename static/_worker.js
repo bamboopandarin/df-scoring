@@ -16,68 +16,7 @@ const MEMORY_STORE = {
 
 const ADMIN_PASSWORDS = ["12345678910", "1234567890"];
 
-const DEFAULT_PLAYERS = [
-  {
-    id: "p1",
-    name: "Budi Santoso",
-    nickname: "The Smasher",
-    photo_url: "https://api.dicebear.com/7.x/bottts/svg?seed=Budi",
-    handedness: "Kanan",
-    level: "Advanced",
-    notes: "Spesialis bola lob dan smash keras",
-    slogan_text: "Smash keras pantang mundur!",
-    slogan_audio_url: "",
-    matches_played: 5,
-    matches_won: 4,
-    matches_lost: 1,
-    created_at: "2025-02-01 10:00:00"
-  },
-  {
-    id: "p2",
-    name: "Rizky Pratama",
-    nickname: "Fast Feet",
-    photo_url: "https://api.dicebear.com/7.x/bottts/svg?seed=Rizky",
-    handedness: "Kidal",
-    level: "Intermediate",
-    notes: "Sangat cepat di dekat net",
-    slogan_text: "Kecepatan adalah kunci kemenangan!",
-    slogan_audio_url: "",
-    matches_played: 5,
-    matches_won: 3,
-    matches_lost: 2,
-    created_at: "2025-02-01 10:05:00"
-  },
-  {
-    id: "p3",
-    name: "Aditya Wijaya",
-    nickname: "Spin Doctor",
-    photo_url: "https://api.dicebear.com/7.x/bottts/svg?seed=Aditya",
-    handedness: "Kanan",
-    level: "Advanced",
-    notes: "Slice dan bandeja mematikan",
-    slogan_text: "Satu spin seribu poin!",
-    slogan_audio_url: "",
-    matches_played: 4,
-    matches_won: 2,
-    matches_lost: 2,
-    created_at: "2025-02-01 10:10:00"
-  },
-  {
-    id: "p4",
-    name: "Dimas Anggara",
-    nickname: "The Wall",
-    photo_url: "https://api.dicebear.com/7.x/bottts/svg?seed=Dimas",
-    handedness: "Kanan",
-    level: "Intermediate",
-    notes: "Pertahanan rapat jarang mati sendiri",
-    slogan_text: "Tembok pertahanan tak tertembus!",
-    slogan_audio_url: "",
-    matches_played: 4,
-    matches_won: 1,
-    matches_lost: 3,
-    created_at: "2025-02-01 10:15:00"
-  }
-];
+const DEFAULT_PLAYERS = [];
 
 const DEFAULT_SETTINGS = {
   google_sheet_url: "",
@@ -120,7 +59,7 @@ async function readStore(env, key, defaultVal) {
 
   try {
     const cache = caches.default;
-    const cacheUrl = new URL(`https://dfscoring-edge-store.internal/${key}`);
+    const cacheUrl = new URL(`https://dfscoring-edge-store.internal/v2/${key}`);
     const cachedRes = await cache.match(cacheUrl);
     if (cachedRes) {
       const data = await cachedRes.json();
@@ -151,7 +90,7 @@ async function writeStore(env, key, data) {
 
   try {
     const cache = caches.default;
-    const cacheUrl = new URL(`https://dfscoring-edge-store.internal/${key}`);
+    const cacheUrl = new URL(`https://dfscoring-edge-store.internal/v2/${key}`);
     const response = new Response(jsonStr, {
       headers: {
         "Content-Type": "application/json",
@@ -330,7 +269,7 @@ async function handleApi(context) {
         if (!ADMIN_PASSWORDS.includes(pwd)) {
           return jsonResponse({
             status: "error",
-            message: "Password Admin salah! Masukkan angka 1 hingga 10 (12345678910)."
+            message: "Password Admin salah!"
           }, 401);
         }
       }

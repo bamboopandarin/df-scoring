@@ -209,7 +209,7 @@ def api_auth_login(body: Dict[str, Any]):
                 status_code=401,
                 content={
                     "status": "error",
-                    "message": "Password Admin salah! Masukkan angka 1 hingga 10 (12345678910)."
+                    "message": "Password Admin salah!"
                 }
             )
 

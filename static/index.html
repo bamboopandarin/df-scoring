@@ -103,12 +103,12 @@
           <!-- Instant Google Account Login Form -->
           <form onsubmit="handleMemberGoogleLogin(event)" class="space-y-2.5">
             <div>
-              <label class="block text-[11px] font-bold text-slate-300 mb-1">Nama Lengkap Google Anda</label>
-              <input type="text" id="member-google-name" required placeholder="Contoh: Steffen Kwik / Budi Santoso" class="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-white focus:outline-none focus:border-emerald-500">
+              <label class="block text-[11px] font-bold text-slate-300 mb-1">Nama Lengkap</label>
+              <input type="text" id="member-google-name" required placeholder="Masukkan nama lengkap Anda" class="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-white focus:outline-none focus:border-emerald-500">
             </div>
             <div>
-              <label class="block text-[11px] font-bold text-slate-300 mb-1">Email Google (@gmail.com)</label>
-              <input type="email" id="member-google-email" required placeholder="nama.anda@gmail.com" class="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-white focus:outline-none focus:border-emerald-500">
+              <label class="block text-[11px] font-bold text-slate-300 mb-1">Email Google</label>
+              <input type="email" id="member-google-email" required placeholder="Masukkan alamat email Google Anda" class="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-white focus:outline-none focus:border-emerald-500">
             </div>
             <div class="grid grid-cols-2 gap-2">
               <div>
@@ -140,7 +140,7 @@
         </div>
       </div>
 
-      <!-- PANEL B: ADMIN LOGIN (SPECIAL PASSWORD 1 TO 10) -->
+      <!-- PANEL B: ADMIN LOGIN -->
       <div id="login-panel-admin" class="hidden space-y-4">
         <form onsubmit="handleAdminLogin(event)" class="p-4 bg-slate-950/90 border-2 border-blue-500/40 rounded-2xl space-y-3.5">
           <div class="flex items-center space-x-2.5">
@@ -155,18 +155,17 @@
 
           <div>
             <label class="block text-[11px] font-bold text-slate-300 mb-1">Nama Admin / Pengawas</label>
-            <input type="text" id="admin-login-name" value="Admin Utama DF" placeholder="Nama Admin" class="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-white focus:outline-none focus:border-blue-500">
+            <input type="text" id="admin-login-name" value="Admin Utama" placeholder="Masukkan nama Admin" class="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-white focus:outline-none focus:border-blue-500">
           </div>
 
           <div>
             <div class="flex items-center justify-between mb-1">
-              <label class="block text-[11px] font-bold text-blue-300 uppercase">Password Khusus Admin</label>
+              <label class="block text-[11px] font-bold text-blue-300 uppercase">Password Admin</label>
               <button type="button" onclick="toggleAdminPasswordVisibility()" class="text-[11px] text-slate-400 hover:text-white font-semibold" id="btn-toggle-pwd-vis">
                 👁️ Lihat Password
               </button>
             </div>
-            <input type="password" id="admin-login-password" required placeholder="Masukkan password angka 1 hingga 10..." class="w-full px-3.5 py-3 bg-slate-900 border-2 border-slate-700 focus:border-blue-500 rounded-xl text-base font-mono tracking-widest text-white focus:outline-none">
-            <p class="text-[11px] text-slate-400 mt-1">Gunakan password khusus Admin (angka 1 hingga 10).</p>
+            <input type="password" id="admin-login-password" required placeholder="Masukkan password Admin" class="w-full px-3.5 py-3 bg-slate-900 border-2 border-slate-700 focus:border-blue-500 rounded-xl text-base font-mono tracking-widest text-white focus:outline-none">
           </div>
 
           <div id="admin-login-error" class="hidden p-2.5 bg-red-950/80 border border-red-500/50 rounded-xl text-xs font-bold text-red-300 text-center"></div>
@@ -179,6 +178,42 @@
       </div>
     </div>
   </div>
+  <script>
+    // Instant inline role switcher fallback so buttons respond at 0ms even before external scripts finish loading
+    window.selectLoginRole = window.selectLoginRole || function(role) {
+      var tabMember = document.getElementById('role-tab-member');
+      var tabAdmin = document.getElementById('role-tab-admin');
+      var panelMember = document.getElementById('login-panel-member');
+      var panelAdmin = document.getElementById('login-panel-admin');
+      if (role === 'admin') {
+        if (tabAdmin) tabAdmin.className = 'py-3 px-3 rounded-xl font-black text-xs sm:text-sm flex flex-col items-center justify-center space-y-1 transition bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg';
+        if (tabMember) tabMember.className = 'py-3 px-3 rounded-xl font-black text-xs sm:text-sm flex flex-col items-center justify-center space-y-1 transition text-slate-400 hover:text-white hover:bg-slate-800/60';
+        if (panelAdmin) panelAdmin.classList.remove('hidden');
+        if (panelMember) panelMember.classList.add('hidden');
+        setTimeout(function() {
+          var pwd = document.getElementById('admin-login-password');
+          if (pwd) pwd.focus();
+        }, 50);
+      } else {
+        if (tabMember) tabMember.className = 'py-3 px-3 rounded-xl font-black text-xs sm:text-sm flex flex-col items-center justify-center space-y-1 transition bg-emerald-600 text-white shadow-lg';
+        if (tabAdmin) tabAdmin.className = 'py-3 px-3 rounded-xl font-black text-xs sm:text-sm flex flex-col items-center justify-center space-y-1 transition text-slate-400 hover:text-white hover:bg-slate-800/60';
+        if (panelMember) panelMember.classList.remove('hidden');
+        if (panelAdmin) panelAdmin.classList.add('hidden');
+      }
+    };
+    window.toggleAdminPasswordVisibility = window.toggleAdminPasswordVisibility || function() {
+      var input = document.getElementById('admin-login-password');
+      var btn = document.getElementById('btn-toggle-pwd-vis');
+      if (!input) return;
+      if (input.type === 'password') {
+        input.type = 'text';
+        if (btn) btn.textContent = '🙈 Sembunyikan';
+      } else {
+        input.type = 'password';
+        if (btn) btn.textContent = '👁️ Lihat Password';
+      }
+    };
+  </script>
 
   <!-- ========================================================================= -->
   <!-- TOP HEADER                                                                -->
@@ -904,7 +939,7 @@
           <span>Masuk ke Mode Admin Utama:</span>
         </div>
         <div class="flex space-x-2">
-          <input type="password" id="quick-admin-pwd-input" placeholder="Password Admin (1 s/d 10)" class="flex-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-mono text-white">
+          <input type="password" id="quick-admin-pwd-input" placeholder="Masukkan password Admin" class="flex-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-mono text-white">
           <button onclick="handleQuickUpgradeToAdmin()" class="px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white font-black rounded-xl text-xs">
             Buka Admin
           </button>
@@ -1129,7 +1164,7 @@
 
             <div>
               <span class="text-[11px] text-slate-400">Nama Tim A:</span>
-              <input type="text" id="new-match-team-name-a" placeholder="Contoh: Budi & Dimas" class="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs font-bold text-white">
+              <input type="text" id="new-match-team-name-a" placeholder="Masukkan nama Tim A" class="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs font-bold text-white">
             </div>
           </div>
 
@@ -1152,7 +1187,7 @@
 
             <div>
               <span class="text-[11px] text-slate-400">Nama Tim B:</span>
-              <input type="text" id="new-match-team-name-b" placeholder="Contoh: Rizky & Aditya" class="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs font-bold text-white">
+              <input type="text" id="new-match-team-name-b" placeholder="Masukkan nama Tim B" class="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs font-bold text-white">
             </div>
           </div>
         </div>
@@ -1240,7 +1275,7 @@
         <div class="pt-2 border-t border-slate-800">
           <label class="block text-xs text-slate-400 mb-1">Atau masukkan angka bebas:</label>
           <div class="flex space-x-2">
-            <input type="number" id="quick-target-custom-input" min="1" max="50" placeholder="Contoh: 5" class="flex-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-sm text-white">
+            <input type="number" id="quick-target-custom-input" min="1" max="50" placeholder="Target poin" class="flex-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-sm text-white">
             <button onclick="applyQuickTargetGames(document.getElementById('quick-target-custom-input').value)" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs">Simpan</button>
           </div>
         </div>
@@ -1271,12 +1306,12 @@
 
         <div>
           <label class="block text-xs font-bold text-slate-300 uppercase mb-1">Nama Lengkap</label>
-          <input type="text" id="player-form-name" required placeholder="Contoh: Rafael Nadal" class="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-sm text-white">
+          <input type="text" id="player-form-name" required placeholder="Masukkan nama lengkap pemain" class="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-sm text-white">
         </div>
 
         <div>
           <label class="block text-xs font-bold text-slate-300 uppercase mb-1">Nama Panggilan / Nickname</label>
-          <input type="text" id="player-form-nickname" placeholder="Contoh: Rafa" class="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-sm text-white">
+          <input type="text" id="player-form-nickname" placeholder="Masukkan nama panggilan" class="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-sm text-white">
         </div>
 
         <div class="grid grid-cols-2 gap-3">
@@ -1310,7 +1345,7 @@
 
           <div>
             <span class="text-[11px] text-slate-400 block mb-1">Teks Slogan Juara:</span>
-            <input type="text" id="player-form-slogan-text" placeholder="Contoh: Vamos Rafa! Pantang Mundur!" class="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white">
+            <input type="text" id="player-form-slogan-text" placeholder="Masukkan teks slogan kemenangan" class="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white">
           </div>
 
           <div class="p-2.5 bg-slate-900/90 rounded-xl border border-slate-800 space-y-2">
@@ -1363,7 +1398,7 @@
       <form onsubmit="handleCreateTournament(event)" class="space-y-4">
         <div>
           <label class="block text-xs font-bold text-slate-300 uppercase mb-1">Nama Turnamen</label>
-          <input type="text" id="tourney-name" required placeholder="Contoh: Weekend Padel Cup 2026" class="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-sm text-white">
+          <input type="text" id="tourney-name" required placeholder="Masukkan nama turnamen" class="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-sm text-white">
         </div>
 
         <div class="grid grid-cols-3 gap-2">
@@ -1464,7 +1499,7 @@
             </div>
 
             <div class="flex space-x-2 pt-1">
-              <input type="text" id="tourney-pair-teamname" placeholder="Nama Pasangan (Opsional, misal: Garuda 1)" class="flex-1 px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white">
+              <input type="text" id="tourney-pair-teamname" placeholder="Nama pasangan (opsional)" class="flex-1 px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white">
               <button type="button" onclick="addDoublesTeamToTourney()" class="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs shadow">
                 + Tambah Tim
               </button>
@@ -1603,6 +1638,9 @@
       </div>
     </div>
   </div>
+
+  <!-- TOAST NOTIFICATION -->
+  <div id="toast-notification" class="fixed bottom-5 right-5 z-[110] px-4 py-3 bg-slate-900/95 border-2 border-emerald-500/60 text-white font-bold text-xs sm:text-sm rounded-2xl shadow-2xl hidden transition-all"></div>
 
   <!-- APPLICATION SCRIPTS -->
   <script src="/js/sound.js"></script>
