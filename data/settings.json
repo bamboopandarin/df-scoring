@@ -1,0 +1,13 @@
+{
+  "google_sheet_url": "",
+  "auto_sync_sheets": true,
+  "default_match_type": "singles",
+  "default_sport": "padel",
+  "default_sets_to_win": 2,
+  "default_games_per_set": 6,
+  "default_tiebreak_at": 6,
+  "default_golden_point": true,
+  "sound_enabled": true,
+  "voice_lang": "id-ID",
+  "court_name": "Lapangan Utama"
+}

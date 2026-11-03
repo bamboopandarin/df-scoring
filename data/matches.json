@@ -1,0 +1,62 @@
+[
+  {
+    "id": "ff3633da",
+    "tournament_id": "9cab8733",
+    "tournament_match_id": "r1_m1",
+    "tournament_name": "DF",
+    "date": "2026-11-02 23:33:08",
+    "name": "Budi Santoso vs Rizky Pratama",
+    "sport": "tennis",
+    "mode": "singles",
+    "team_a_name": "Budi Santoso",
+    "team_b_name": "Rizky Pratama",
+    "team_a_player_ids": [
+      "p1"
+    ],
+    "team_b_player_ids": [
+      "p2"
+    ],
+    "team_a_players": [
+      {
+        "id": "p1",
+        "name": "Budi Santoso",
+        "nickname": "Budi",
+        "photo_url": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80",
+        "handedness": "Kanan",
+        "level": "Advanced",
+        "notes": "Forehand topspin tajam",
+        "matches_played": 9,
+        "matches_won": 7,
+        "matches_lost": 2,
+        "created_at": "2026-10-25 10:00:00"
+      }
+    ],
+    "team_b_players": [
+      {
+        "id": "p2",
+        "name": "Rizky Pratama",
+        "nickname": "Kiki",
+        "photo_url": "https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=150&auto=format&fit=crop&q=80",
+        "handedness": "Kanan",
+        "level": "Intermediate",
+        "notes": "Servis flat keras",
+        "matches_played": 11,
+        "matches_won": 7,
+        "matches_lost": 4,
+        "created_at": "2026-10-25 10:15:00"
+      }
+    ],
+    "rules": {
+      "sets_to_win": 1,
+      "games_per_set": 6,
+      "golden_point": true,
+      "tiebreak_at": 6,
+      "tiebreak_points": 7,
+      "final_set_super_tiebreak": false
+    },
+    "sets_history": [],
+    "winner": null,
+    "status": "in_progress",
+    "duration_minutes": 1
+  }
+]

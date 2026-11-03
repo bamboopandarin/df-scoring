@@ -1,0 +1,16 @@
+[
+  {
+    "id": "court_1",
+    "name": "Lapangan 1",
+    "active_match": {
+      "test": 123
+    },
+    "last_updated": "2026-11-03 06:51:17"
+  },
+  {
+    "id": "court_2",
+    "name": "Lapangan 2",
+    "active_match": null,
+    "last_updated": null
+  }
+]

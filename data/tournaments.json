@@ -1,0 +1,813 @@
+[
+  {
+    "id": "9cab8733",
+    "name": "DF",
+    "sport": "tennis",
+    "mode": "singles",
+    "format": "knockout",
+    "total_rounds": 4,
+    "bracket_size": 16,
+    "participants": [
+      {
+        "id": "p1",
+        "name": "Budi Santoso",
+        "photo_url": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80",
+        "players": [
+          {
+            "id": "p1",
+            "name": "Budi Santoso",
+            "nickname": "Budi",
+            "photo_url": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80",
+            "handedness": "Kanan",
+            "level": "Advanced",
+            "notes": "Forehand topspin tajam",
+            "matches_played": 9,
+            "matches_won": 7,
+            "matches_lost": 2,
+            "created_at": "2026-10-25 10:00:00"
+          }
+        ]
+      },
+      {
+        "id": "p2",
+        "name": "Rizky Pratama",
+        "photo_url": "https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=150&auto=format&fit=crop&q=80",
+        "players": [
+          {
+            "id": "p2",
+            "name": "Rizky Pratama",
+            "nickname": "Kiki",
+            "photo_url": "https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=150&auto=format&fit=crop&q=80",
+            "handedness": "Kanan",
+            "level": "Intermediate",
+            "notes": "Servis flat keras",
+            "matches_played": 11,
+            "matches_won": 7,
+            "matches_lost": 4,
+            "created_at": "2026-10-25 10:15:00"
+          }
+        ]
+      },
+      {
+        "id": "p3",
+        "name": "Aditya Wijaya",
+        "photo_url": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80",
+        "players": [
+          {
+            "id": "p3",
+            "name": "Aditya Wijaya",
+            "nickname": "Adit",
+            "photo_url": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80",
+            "handedness": "Kidal",
+            "level": "Advanced",
+            "notes": "Spesialis slice dan drop shot",
+            "matches_played": 7,
+            "matches_won": 4,
+            "matches_lost": 3,
+            "created_at": "2026-10-26 14:00:00"
+          }
+        ]
+      },
+      {
+        "id": "p4",
+        "name": "Dimas Anggara",
+        "photo_url": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
+        "players": [
+          {
+            "id": "p4",
+            "name": "Dimas Anggara",
+            "nickname": "Dimas",
+            "photo_url": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
+            "handedness": "Kanan",
+            "level": "Intermediate",
+            "notes": "Pertahanan baseline kokoh",
+            "matches_played": 6,
+            "matches_won": 3,
+            "matches_lost": 3,
+            "created_at": "2026-10-26 14:30:00"
+          }
+        ]
+      },
+      {
+        "id": "b881d97d",
+        "name": "TOLE JAGO",
+        "photo_url": "",
+        "players": [
+          {
+            "id": "b881d97d",
+            "name": "TOLE JAGO",
+            "nickname": "TOGO",
+            "photo_url": "",
+            "handedness": "Kanan",
+            "level": "Intermediate",
+            "notes": "",
+            "matches_played": 0,
+            "matches_won": 0,
+            "matches_lost": 0,
+            "created_at": "2026-10-30 12:49:50"
+          }
+        ]
+      },
+      {
+        "id": "09efc5e2",
+        "name": "RATA KANAN",
+        "photo_url": "",
+        "players": [
+          {
+            "id": "09efc5e2",
+            "name": "RATA KANAN",
+            "nickname": "RAKA",
+            "photo_url": "",
+            "handedness": "Kanan",
+            "level": "Intermediate",
+            "notes": "",
+            "matches_played": 0,
+            "matches_won": 0,
+            "matches_lost": 0,
+            "created_at": "2026-10-30 12:50:07"
+          }
+        ]
+      },
+      {
+        "id": "7d3b6772",
+        "name": "BACOD GEDE",
+        "photo_url": "",
+        "players": [
+          {
+            "id": "7d3b6772",
+            "name": "BACOD GEDE",
+            "nickname": "BADE",
+            "photo_url": "",
+            "handedness": "Kanan",
+            "level": "Intermediate",
+            "notes": "",
+            "matches_played": 0,
+            "matches_won": 0,
+            "matches_lost": 0,
+            "created_at": "2026-10-30 12:50:17"
+          }
+        ]
+      },
+      {
+        "id": "d5727ba8",
+        "name": "LOB MASTER",
+        "photo_url": "",
+        "players": [
+          {
+            "id": "d5727ba8",
+            "name": "LOB MASTER",
+            "nickname": "LOTER",
+            "photo_url": "",
+            "handedness": "Kanan",
+            "level": "Intermediate",
+            "notes": "",
+            "matches_played": 0,
+            "matches_won": 0,
+            "matches_lost": 0,
+            "created_at": "2026-10-30 12:50:30"
+          }
+        ]
+      },
+      {
+        "id": "dc186de5",
+        "name": "CONGOR PANJANG",
+        "photo_url": "",
+        "players": [
+          {
+            "id": "dc186de5",
+            "name": "CONGOR PANJANG",
+            "nickname": "COCO",
+            "photo_url": "",
+            "handedness": "Kanan",
+            "level": "Intermediate",
+            "notes": "",
+            "matches_played": 0,
+            "matches_won": 0,
+            "matches_lost": 0,
+            "created_at": "2026-10-30 12:50:46"
+          }
+        ]
+      },
+      {
+        "id": "423ef8a3",
+        "name": "TOLE GENTONG",
+        "photo_url": "",
+        "players": [
+          {
+            "id": "423ef8a3",
+            "name": "TOLE GENTONG",
+            "nickname": "LETONG",
+            "photo_url": "",
+            "handedness": "Kanan",
+            "level": "Intermediate",
+            "notes": "",
+            "matches_played": 0,
+            "matches_won": 0,
+            "matches_lost": 0,
+            "created_at": "2026-10-30 12:51:08"
+          }
+        ]
+      },
+      {
+        "id": "69736d19",
+        "name": "JONI BARBOSA",
+        "photo_url": "",
+        "players": [
+          {
+            "id": "69736d19",
+            "name": "JONI BARBOSA",
+            "nickname": "BOBO",
+            "photo_url": "",
+            "handedness": "Kanan",
+            "level": "Intermediate",
+            "notes": "",
+            "matches_played": 0,
+            "matches_won": 0,
+            "matches_lost": 0,
+            "created_at": "2026-10-30 12:51:27"
+          }
+        ]
+      },
+      {
+        "id": "fb3c4618",
+        "name": "JENGGOT MERAH",
+        "photo_url": "",
+        "players": [
+          {
+            "id": "fb3c4618",
+            "name": "JENGGOT MERAH",
+            "nickname": "JAMES",
+            "photo_url": "",
+            "handedness": "Kanan",
+            "level": "Intermediate",
+            "notes": "",
+            "matches_played": 0,
+            "matches_won": 0,
+            "matches_lost": 0,
+            "created_at": "2026-10-30 12:51:53"
+          }
+        ]
+      }
+    ],
+    "rules": {
+      "sets_to_win": 1,
+      "games_per_set": 6,
+      "golden_point": true,
+      "tiebreak_at": 6
+    },
+    "rounds": [
+      {
+        "round_number": 1,
+        "name": "Babak 16 Besar",
+        "matches": [
+          {
+            "id": "r1_m1",
+            "round": 1,
+            "match_number": 1,
+            "team_a": {
+              "id": "p1",
+              "name": "Budi Santoso",
+              "photo_url": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80",
+              "players": [
+                {
+                  "id": "p1",
+                  "name": "Budi Santoso",
+                  "nickname": "Budi",
+                  "photo_url": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80",
+                  "handedness": "Kanan",
+                  "level": "Advanced",
+                  "notes": "Forehand topspin tajam",
+                  "matches_played": 9,
+                  "matches_won": 7,
+                  "matches_lost": 2,
+                  "created_at": "2026-10-25 10:00:00"
+                }
+              ]
+            },
+            "team_b": {
+              "id": "p2",
+              "name": "Rizky Pratama",
+              "photo_url": "https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=150&auto=format&fit=crop&q=80",
+              "players": [
+                {
+                  "id": "p2",
+                  "name": "Rizky Pratama",
+                  "nickname": "Kiki",
+                  "photo_url": "https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=150&auto=format&fit=crop&q=80",
+                  "handedness": "Kanan",
+                  "level": "Intermediate",
+                  "notes": "Servis flat keras",
+                  "matches_played": 11,
+                  "matches_won": 7,
+                  "matches_lost": 4,
+                  "created_at": "2026-10-25 10:15:00"
+                }
+              ]
+            },
+            "winner": null,
+            "winner_participant": {
+              "id": "p2",
+              "name": "Rizky Pratama",
+              "photo_url": "https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=150&auto=format&fit=crop&q=80",
+              "players": [
+                {
+                  "id": "p2",
+                  "name": "Rizky Pratama",
+                  "nickname": "Kiki",
+                  "photo_url": "https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=150&auto=format&fit=crop&q=80",
+                  "handedness": "Kanan",
+                  "level": "Intermediate",
+                  "notes": "Servis flat keras",
+                  "matches_played": 11,
+                  "matches_won": 7,
+                  "matches_lost": 4,
+                  "created_at": "2026-10-25 10:15:00"
+                }
+              ]
+            },
+            "status": "completed",
+            "sets_history": [],
+            "score_display": ""
+          },
+          {
+            "id": "r1_m2",
+            "round": 1,
+            "match_number": 2,
+            "team_a": {
+              "id": "p3",
+              "name": "Aditya Wijaya",
+              "photo_url": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80",
+              "players": [
+                {
+                  "id": "p3",
+                  "name": "Aditya Wijaya",
+                  "nickname": "Adit",
+                  "photo_url": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80",
+                  "handedness": "Kidal",
+                  "level": "Advanced",
+                  "notes": "Spesialis slice dan drop shot",
+                  "matches_played": 7,
+                  "matches_won": 4,
+                  "matches_lost": 3,
+                  "created_at": "2026-10-26 14:00:00"
+                }
+              ]
+            },
+            "team_b": {
+              "id": "p4",
+              "name": "Dimas Anggara",
+              "photo_url": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
+              "players": [
+                {
+                  "id": "p4",
+                  "name": "Dimas Anggara",
+                  "nickname": "Dimas",
+                  "photo_url": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
+                  "handedness": "Kanan",
+                  "level": "Intermediate",
+                  "notes": "Pertahanan baseline kokoh",
+                  "matches_played": 6,
+                  "matches_won": 3,
+                  "matches_lost": 3,
+                  "created_at": "2026-10-26 14:30:00"
+                }
+              ]
+            },
+            "winner": null,
+            "winner_participant": null,
+            "status": "pending",
+            "sets_history": [],
+            "score_display": "vs"
+          },
+          {
+            "id": "r1_m3",
+            "round": 1,
+            "match_number": 3,
+            "team_a": {
+              "id": "b881d97d",
+              "name": "TOLE JAGO",
+              "photo_url": "",
+              "players": [
+                {
+                  "id": "b881d97d",
+                  "name": "TOLE JAGO",
+                  "nickname": "TOGO",
+                  "photo_url": "",
+                  "handedness": "Kanan",
+                  "level": "Intermediate",
+                  "notes": "",
+                  "matches_played": 0,
+                  "matches_won": 0,
+                  "matches_lost": 0,
+                  "created_at": "2026-10-30 12:49:50"
+                }
+              ]
+            },
+            "team_b": {
+              "id": "09efc5e2",
+              "name": "RATA KANAN",
+              "photo_url": "",
+              "players": [
+                {
+                  "id": "09efc5e2",
+                  "name": "RATA KANAN",
+                  "nickname": "RAKA",
+                  "photo_url": "",
+                  "handedness": "Kanan",
+                  "level": "Intermediate",
+                  "notes": "",
+                  "matches_played": 0,
+                  "matches_won": 0,
+                  "matches_lost": 0,
+                  "created_at": "2026-10-30 12:50:07"
+                }
+              ]
+            },
+            "winner": null,
+            "winner_participant": null,
+            "status": "pending",
+            "sets_history": [],
+            "score_display": "vs"
+          },
+          {
+            "id": "r1_m4",
+            "round": 1,
+            "match_number": 4,
+            "team_a": {
+              "id": "7d3b6772",
+              "name": "BACOD GEDE",
+              "photo_url": "",
+              "players": [
+                {
+                  "id": "7d3b6772",
+                  "name": "BACOD GEDE",
+                  "nickname": "BADE",
+                  "photo_url": "",
+                  "handedness": "Kanan",
+                  "level": "Intermediate",
+                  "notes": "",
+                  "matches_played": 0,
+                  "matches_won": 0,
+                  "matches_lost": 0,
+                  "created_at": "2026-10-30 12:50:17"
+                }
+              ]
+            },
+            "team_b": {
+              "id": "d5727ba8",
+              "name": "LOB MASTER",
+              "photo_url": "",
+              "players": [
+                {
+                  "id": "d5727ba8",
+                  "name": "LOB MASTER",
+                  "nickname": "LOTER",
+                  "photo_url": "",
+                  "handedness": "Kanan",
+                  "level": "Intermediate",
+                  "notes": "",
+                  "matches_played": 0,
+                  "matches_won": 0,
+                  "matches_lost": 0,
+                  "created_at": "2026-10-30 12:50:30"
+                }
+              ]
+            },
+            "winner": null,
+            "winner_participant": null,
+            "status": "pending",
+            "sets_history": [],
+            "score_display": "vs"
+          },
+          {
+            "id": "r1_m5",
+            "round": 1,
+            "match_number": 5,
+            "team_a": {
+              "id": "dc186de5",
+              "name": "CONGOR PANJANG",
+              "photo_url": "",
+              "players": [
+                {
+                  "id": "dc186de5",
+                  "name": "CONGOR PANJANG",
+                  "nickname": "COCO",
+                  "photo_url": "",
+                  "handedness": "Kanan",
+                  "level": "Intermediate",
+                  "notes": "",
+                  "matches_played": 0,
+                  "matches_won": 0,
+                  "matches_lost": 0,
+                  "created_at": "2026-10-30 12:50:46"
+                }
+              ]
+            },
+            "team_b": {
+              "id": "423ef8a3",
+              "name": "TOLE GENTONG",
+              "photo_url": "",
+              "players": [
+                {
+                  "id": "423ef8a3",
+                  "name": "TOLE GENTONG",
+                  "nickname": "LETONG",
+                  "photo_url": "",
+                  "handedness": "Kanan",
+                  "level": "Intermediate",
+                  "notes": "",
+                  "matches_played": 0,
+                  "matches_won": 0,
+                  "matches_lost": 0,
+                  "created_at": "2026-10-30 12:51:08"
+                }
+              ]
+            },
+            "winner": null,
+            "winner_participant": null,
+            "status": "pending",
+            "sets_history": [],
+            "score_display": "vs"
+          },
+          {
+            "id": "r1_m6",
+            "round": 1,
+            "match_number": 6,
+            "team_a": {
+              "id": "69736d19",
+              "name": "JONI BARBOSA",
+              "photo_url": "",
+              "players": [
+                {
+                  "id": "69736d19",
+                  "name": "JONI BARBOSA",
+                  "nickname": "BOBO",
+                  "photo_url": "",
+                  "handedness": "Kanan",
+                  "level": "Intermediate",
+                  "notes": "",
+                  "matches_played": 0,
+                  "matches_won": 0,
+                  "matches_lost": 0,
+                  "created_at": "2026-10-30 12:51:27"
+                }
+              ]
+            },
+            "team_b": {
+              "id": "fb3c4618",
+              "name": "JENGGOT MERAH",
+              "photo_url": "",
+              "players": [
+                {
+                  "id": "fb3c4618",
+                  "name": "JENGGOT MERAH",
+                  "nickname": "JAMES",
+                  "photo_url": "",
+                  "handedness": "Kanan",
+                  "level": "Intermediate",
+                  "notes": "",
+                  "matches_played": 0,
+                  "matches_won": 0,
+                  "matches_lost": 0,
+                  "created_at": "2026-10-30 12:51:53"
+                }
+              ]
+            },
+            "winner": null,
+            "winner_participant": null,
+            "status": "pending",
+            "sets_history": [],
+            "score_display": "vs"
+          },
+          {
+            "id": "r1_m7",
+            "round": 1,
+            "match_number": 7,
+            "team_a": {
+              "id": "BYE_12",
+              "name": "BYE (Lolos Otomatis)",
+              "is_bye": true,
+              "players": []
+            },
+            "team_b": {
+              "id": "BYE_13",
+              "name": "BYE (Lolos Otomatis)",
+              "is_bye": true,
+              "players": []
+            },
+            "winner": "team_a",
+            "winner_participant": {
+              "id": "BYE_12",
+              "name": "BYE (Lolos Otomatis)",
+              "is_bye": true,
+              "players": []
+            },
+            "status": "completed",
+            "sets_history": [
+              {
+                "team_a": "W",
+                "team_b": "BYE"
+              }
+            ],
+            "score_display": "BYE"
+          },
+          {
+            "id": "r1_m8",
+            "round": 1,
+            "match_number": 8,
+            "team_a": {
+              "id": "BYE_14",
+              "name": "BYE (Lolos Otomatis)",
+              "is_bye": true,
+              "players": []
+            },
+            "team_b": {
+              "id": "BYE_15",
+              "name": "BYE (Lolos Otomatis)",
+              "is_bye": true,
+              "players": []
+            },
+            "winner": "team_a",
+            "winner_participant": {
+              "id": "BYE_14",
+              "name": "BYE (Lolos Otomatis)",
+              "is_bye": true,
+              "players": []
+            },
+            "status": "completed",
+            "sets_history": [
+              {
+                "team_a": "W",
+                "team_b": "BYE"
+              }
+            ],
+            "score_display": "BYE"
+          }
+        ]
+      },
+      {
+        "round_number": 2,
+        "name": "Perempat Final (Quarter)",
+        "matches": [
+          {
+            "id": "r2_m1",
+            "round": 2,
+            "match_number": 1,
+            "team_a": {
+              "id": "p2",
+              "name": "Rizky Pratama",
+              "photo_url": "https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=150&auto=format&fit=crop&q=80",
+              "players": [
+                {
+                  "id": "p2",
+                  "name": "Rizky Pratama",
+                  "nickname": "Kiki",
+                  "photo_url": "https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=150&auto=format&fit=crop&q=80",
+                  "handedness": "Kanan",
+                  "level": "Intermediate",
+                  "notes": "Servis flat keras",
+                  "matches_played": 11,
+                  "matches_won": 7,
+                  "matches_lost": 4,
+                  "created_at": "2026-10-25 10:15:00"
+                }
+              ]
+            },
+            "team_b": null,
+            "winner": null,
+            "winner_participant": null,
+            "status": "pending",
+            "sets_history": [],
+            "score_display": "vs",
+            "feeds_from": [
+              "r1_m1",
+              "r1_m2"
+            ]
+          },
+          {
+            "id": "r2_m2",
+            "round": 2,
+            "match_number": 2,
+            "team_a": null,
+            "team_b": null,
+            "winner": null,
+            "winner_participant": null,
+            "status": "pending",
+            "sets_history": [],
+            "score_display": "vs",
+            "feeds_from": [
+              "r1_m3",
+              "r1_m4"
+            ]
+          },
+          {
+            "id": "r2_m3",
+            "round": 2,
+            "match_number": 3,
+            "team_a": null,
+            "team_b": null,
+            "winner": null,
+            "winner_participant": null,
+            "status": "pending",
+            "sets_history": [],
+            "score_display": "vs",
+            "feeds_from": [
+              "r1_m5",
+              "r1_m6"
+            ]
+          },
+          {
+            "id": "r2_m4",
+            "round": 2,
+            "match_number": 4,
+            "team_a": {
+              "id": "BYE_12",
+              "name": "BYE (Lolos Otomatis)",
+              "is_bye": true,
+              "players": []
+            },
+            "team_b": {
+              "id": "BYE_14",
+              "name": "BYE (Lolos Otomatis)",
+              "is_bye": true,
+              "players": []
+            },
+            "winner": null,
+            "winner_participant": null,
+            "status": "pending",
+            "sets_history": [],
+            "score_display": "vs",
+            "feeds_from": [
+              "r1_m7",
+              "r1_m8"
+            ]
+          }
+        ]
+      },
+      {
+        "round_number": 3,
+        "name": "Semi Final",
+        "matches": [
+          {
+            "id": "r3_m1",
+            "round": 3,
+            "match_number": 1,
+            "team_a": null,
+            "team_b": null,
+            "winner": null,
+            "winner_participant": null,
+            "status": "pending",
+            "sets_history": [],
+            "score_display": "vs",
+            "feeds_from": [
+              "r2_m1",
+              "r2_m2"
+            ]
+          },
+          {
+            "id": "r3_m2",
+            "round": 3,
+            "match_number": 2,
+            "team_a": null,
+            "team_b": null,
+            "winner": null,
+            "winner_participant": null,
+            "status": "pending",
+            "sets_history": [],
+            "score_display": "vs",
+            "feeds_from": [
+              "r2_m3",
+              "r2_m4"
+            ]
+          }
+        ]
+      },
+      {
+        "round_number": 4,
+        "name": "🏆 Final",
+        "matches": [
+          {
+            "id": "r4_m1",
+            "round": 4,
+            "match_number": 1,
+            "team_a": null,
+            "team_b": null,
+            "winner": null,
+            "winner_participant": null,
+            "status": "pending",
+            "sets_history": [],
+            "score_display": "vs",
+            "feeds_from": [
+              "r3_m1",
+              "r3_m2"
+            ]
+          }
+        ]
+      }
+    ],
+    "status": "active",
+    "champion": null,
+    "champion_name": null,
+    "created_at": "2026-11-03 06:28:26"
+  }
+]

@@ -1,0 +1,166 @@
+/* Custom CSS for Padel & Tennis Scoring Master */
+:root {
+  --primary: #10b981;
+  --primary-dark: #047857;
+  --accent: #eab308;
+  --tennis-yellow: #ccff00;
+  --court-blue: #0284c7;
+  --court-clay: #ea580c;
+  --bg-dark: #0f172a;
+  --card-dark: #1e293b;
+  --border-dark: #334155;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.1);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+/* Pulsing server tennis ball */
+@keyframes ballPulse {
+  0%, 100% {
+    transform: scale(1);
+    filter: drop-shadow(0 0 4px #ccff00);
+  }
+  50% {
+    transform: scale(1.18);
+    filter: drop-shadow(0 0 10px #ccff00);
+  }
+}
+
+.serving-ball {
+  animation: ballPulse 1.8s infinite ease-in-out;
+}
+
+/* Golden Point Glow */
+@keyframes goldPulse {
+  0%, 100% {
+    box-shadow: 0 0 15px rgba(234, 179, 8, 0.6);
+    border-color: #eab308;
+  }
+  50% {
+    box-shadow: 0 0 30px rgba(234, 179, 8, 0.9);
+    border-color: #fef08a;
+  }
+}
+
+.golden-point-active {
+  animation: goldPulse 1.5s infinite ease-in-out;
+}
+
+/* Deuce Glow */
+@keyframes deucePulse {
+  0%, 100% {
+    box-shadow: 0 0 15px rgba(56, 189, 248, 0.6);
+    border-color: #38bdf8;
+  }
+  50% {
+    box-shadow: 0 0 30px rgba(56, 189, 248, 0.9);
+    border-color: #bae6fd;
+  }
+}
+
+.deuce-active {
+  animation: deucePulse 1.5s infinite ease-in-out;
+}
+
+/* Tournament Bracket CSS */
+.bracket-container {
+  display: flex;
+  overflow-x: auto;
+  padding: 1.5rem 0.5rem;
+  gap: 3rem;
+  min-height: 480px;
+}
+
+.bracket-round {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-around;
+  min-width: 280px;
+  position: relative;
+}
+
+.bracket-match {
+  position: relative;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  margin: 1rem 0;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+  transition: all 0.2s ease;
+}
+
+.bracket-match:hover {
+  border-color: #10b981;
+  transform: translateY(-2px);
+  box-shadow: 0 8px 15px -3px rgba(16, 185, 129, 0.2);
+}
+
+.bracket-match.in-progress {
+  border-color: #eab308;
+  box-shadow: 0 0 12px rgba(234, 179, 8, 0.4);
+}
+
+.bracket-match.completed {
+  border-color: #10b981;
+}
+
+/* Match Score Digit */
+.score-digit {
+  font-family: 'Chakra Petch', 'Orbitron', 'Impact', sans-serif;
+  letter-spacing: 1px;
+}
+
+/* Touch active scale effect */
+.btn-touch {
+  transition: transform 0.08s ease, filter 0.08s ease;
+}
+.btn-touch:active {
+  transform: scale(0.96);
+  filter: brightness(0.9);
+}
+
+/* Doubles Dual Avatar Layout */
+.doubles-avatar-wrap {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+.doubles-avatar-wrap img:nth-child(2) {
+  margin-left: -1rem;
+  border: 2px solid #0f172a;
+}
+
+/* High contrast mode for outdoor sunlight */
+body.sunlight-mode {
+  background-color: #f8fafc !important;
+  color: #0f172a !important;
+}
+body.sunlight-mode .card-sunlight {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1) !important;
+}
+body.sunlight-mode .text-sunlight-invert {
+  color: #0f172a !important;
+}
