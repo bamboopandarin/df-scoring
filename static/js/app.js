@@ -259,7 +259,7 @@ function setMemberAuthMode(mode) {
   password.autocomplete = registering ? 'new-password' : 'current-password';
   password.minLength = registering ? 8 : 1;
   document.getElementById('member-password-hint').classList.toggle('hidden', !registering);
-  document.getElementById('member-auth-submit').textContent = registering ? 'Buat Akun dan Masuk' : 'Masuk';
+  document.getElementById('member-auth-submit').textContent = registering ? 'Daftar dan Masuk tanpa Google' : 'Masuk tanpa Google';
   showAuthMessage('member-login-error');
 }
 

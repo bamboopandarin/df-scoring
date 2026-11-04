@@ -86,9 +86,10 @@
           <p id="google-login-status" class="text-xs text-slate-400" role="status">Memeriksa opsi masuk Google…</p>
         </div>
         <div class="rounded-2xl border border-emerald-500/30 bg-slate-950/90 p-3.5 space-y-3">
+          <p class="text-xs text-slate-300">Gunakan email dan password DF Scoring. Tidak perlu akun Google.</p>
           <div class="grid grid-cols-2 gap-2">
-            <button type="button" id="member-mode-login" aria-pressed="true" onclick="setMemberAuthMode('login')" class="rounded-lg border border-emerald-500/40 px-2.5 py-2 text-xs font-bold text-emerald-300 aria-pressed:bg-emerald-900/60">Masuk dengan Email</button>
-            <button type="button" id="member-mode-register" aria-pressed="false" onclick="setMemberAuthMode('register')" class="rounded-lg border border-emerald-500/40 px-2.5 py-2 text-xs font-bold text-emerald-300 aria-pressed:bg-emerald-900/60">Buat Akun</button>
+            <button type="button" id="member-mode-login" aria-pressed="true" onclick="setMemberAuthMode('login')" class="rounded-lg border border-emerald-500/40 px-2.5 py-2 text-xs font-bold text-emerald-300 aria-pressed:bg-emerald-900/60">Masuk tanpa Google</button>
+            <button type="button" id="member-mode-register" aria-pressed="false" onclick="setMemberAuthMode('register')" class="rounded-lg border border-emerald-500/40 px-2.5 py-2 text-xs font-bold text-emerald-300 aria-pressed:bg-emerald-900/60">Daftar tanpa Google</button>
           </div>
           <form id="member-auth-form" onsubmit="handleMemberAuth(event)" class="space-y-2.5">
             <div id="member-name-field" class="hidden">
@@ -105,7 +106,7 @@
               <p id="member-password-hint" class="hidden mt-1 text-xs text-slate-400">Gunakan minimal 8 karakter.</p>
             </div>
             <p id="member-login-error" class="hidden rounded-lg border border-red-500/40 bg-red-950/60 p-2 text-xs text-red-200" role="alert"></p>
-            <button type="submit" id="member-auth-submit" class="w-full rounded-xl bg-emerald-600 px-3 py-2.5 text-sm font-black text-white hover:bg-emerald-500 disabled:opacity-50">Masuk</button>
+            <button type="submit" id="member-auth-submit" class="w-full rounded-xl bg-emerald-600 px-3 py-2.5 text-sm font-black text-white hover:bg-emerald-500 disabled:opacity-50">Masuk tanpa Google</button>
           </form>
           <div class="grid grid-cols-2 gap-2 border-t border-slate-800 pt-2">
             <div>
@@ -1641,6 +1642,6 @@
   <script src="/js/sound.js"></script>
   <script type="module" src="/js/scorer.js?v=shared-1"></script>
   <script type="module" src="/js/tournament.js?v=shared-1"></script>
-  <script src="/js/app.js?v=auth-2"></script>
+  <script src="/js/app.js?v=auth-3"></script>
 </body>
 </html>
