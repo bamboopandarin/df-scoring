@@ -117,8 +117,10 @@ class MatchScorer {
     this.point_log = Array.isArray(config.point_log) ? [...config.point_log] : [];
 
     // History stack for Undo/Redo
-    this.history = [];
-    this.redoStack = [];
+    this.undo_count = config.undo_count || 0;
+    this.redo_count = config.redo_count || 0;
+    this.history = config.history || [];
+    this.redoStack = config.redoStack || [];
 
     // Notifications
     this.side_switch_alert = !!config.side_switch_alert;
@@ -149,6 +151,8 @@ class MatchScorer {
       win_type: this.win_type,
       win_reason: this.win_reason,
       court_id: this.court_id,
+      start_time: this.start_time.toISOString(),
+      end_time: this.end_time?.toISOString() || null,
       side_switch_alert: this.side_switch_alert,
       stats: { ...this.stats },
       point_log: JSON.parse(JSON.stringify(this.point_log))
@@ -171,6 +175,8 @@ class MatchScorer {
     this.win_type = snap.win_type || null;
     this.win_reason = snap.win_reason || '';
     this.court_id = snap.court_id || 'court_1';
+    if (snap.start_time) this.start_time = new Date(snap.start_time);
+    this.end_time = snap.end_time ? new Date(snap.end_time) : null;
     this.side_switch_alert = snap.side_switch_alert;
     if (snap.stats) this.stats = { ...snap.stats };
     if (snap.point_log) this.point_log = JSON.parse(JSON.stringify(snap.point_log));
@@ -179,7 +185,7 @@ class MatchScorer {
 
   pushHistory() {
     this.history.push(this.getSnapshot());
-    if (this.history.length > 60) this.history.shift();
+    if (this.history.length > 30) this.history.shift();
     this.redoStack = [];
     this.version++;
   }
@@ -189,7 +195,7 @@ class MatchScorer {
     this.redoStack.push(this.getSnapshot());
     const prev = this.history.pop();
     this.restoreSnapshot(prev);
-    window.soundEngine?.playUndoBeep();
+    globalThis.soundEngine?.playUndoBeep();
     return true;
   }
 
@@ -198,7 +204,7 @@ class MatchScorer {
     this.history.push(this.getSnapshot());
     const next = this.redoStack.pop();
     this.restoreSnapshot(next);
-    window.soundEngine?.playPointBeep();
+    globalThis.soundEngine?.playPointBeep();
     return true;
   }
 
@@ -261,19 +267,35 @@ class MatchScorer {
     this.server_player_index[team] = playerIndex;
   }
 
-  // Quick DEUCE button (40-40)
-  setDeuce() {
-    if (this.is_completed) return;
-    this.pushHistory();
-    this.is_tiebreak = false;
-    this.current_points = { team_a: 3, team_b: 3 }; // 40 - 40
-    if (this.rules.golden_point) {
-      this.stats.golden_points_count = (this.stats.golden_points_count || 0) + 1;
-    } else {
-      this.stats.deuces_count = (this.stats.deuces_count || 0) + 1;
-    }
-    window.soundEngine?.playPointBeep();
-    window.soundEngine?.speak(this.rules.golden_point ? 'Punto de Oro! Golden Point!' : 'Deuce!');
+  applyAction(action) {
+    const { type, team, player, games, reason, note } = action || {};
+    if (type === 'undo') return this.undo();
+    if (type === 'redo') return this.redo();
+    if (this.is_completed) return false;
+
+    const validTeam = team === 'team_a' || team === 'team_b';
+    if (type === 'point' && validTeam) this.addPoint(team);
+    else if (type === 'server') this.toggleServer();
+    else if (type === 'doubles_server' && this.mode === 'doubles' && validTeam && [0, 1].includes(player)) {
+      this.setDoublesServer(team, player);
+    } else if (type === 'golden_point') this.toggleGoldenPoint();
+    else if (type === 'target' && Number.isInteger(games) && games >= 1 && games <= 50) this.setTargetGames(games);
+    else if (type === 'reset') this.resetMatch();
+    else if (type === 'walkover' && validTeam && ['walkover', 'disqualification', 'retired'].includes(reason)) {
+      this.winByDefault(team, reason, String(note || '').slice(0, 200));
+    } else return false;
+    return true;
+  }
+
+  finishEarly(winner) {
+    if (winner !== 'team_a' && winner !== 'team_b') return false;
+    this.winner = winner;
+    this.is_completed = true;
+    this.win_reason = 'Diselesaikan manual';
+    this.end_time = new Date();
+    const { team_a, team_b } = this.current_set_games;
+    if (team_a || team_b) this.sets_history.push({ team_a, team_b, partial: true });
+    return true;
   }
 
   // Toggle Golden Point on the fly
@@ -301,7 +323,7 @@ class MatchScorer {
     this.pushHistory();
     this.side_switch_alert = false;
 
-    window.soundEngine?.playPointBeep();
+    globalThis.soundEngine?.playPointBeep();
 
     // Update Point & Streak Analytics
     if (team === 'team_a') {
@@ -404,7 +426,7 @@ class MatchScorer {
     // Side change reminder every 6 points in tiebreak
     if (totalPts % 6 === 0) {
       this.side_switch_alert = true;
-      window.soundEngine?.announceSideSwitch();
+      globalThis.soundEngine?.announceSideSwitch();
     }
 
     const ptsTeam = this.tiebreak_points[team];
@@ -414,7 +436,7 @@ class MatchScorer {
       this.current_set_games[team]++;
       this.winSet(team, true);
     } else {
-      window.soundEngine?.announceScore(
+      globalThis.soundEngine?.announceScore(
         scoreA,
         scoreB,
         this.server === 'team_a',
@@ -490,16 +512,16 @@ class MatchScorer {
     if (gamesA === this.rules.tiebreak_at && gamesB === this.rules.tiebreak_at) {
       this.is_tiebreak = true;
       this.tiebreak_points = { team_a: 0, team_b: 0 };
-      window.soundEngine?.announceGame(teamWinnerName, gamesA, gamesB);
+      globalThis.soundEngine?.announceGame(teamWinnerName, gamesA, gamesB);
       setTimeout(() => {
-        window.soundEngine?.speak(window.soundEngine.voiceLang === 'id-ID' ? 'Memasuki Tie-break!' : 'Entering Tie-break!');
+        globalThis.soundEngine?.speak(globalThis.soundEngine.voiceLang === 'id-ID' ? 'Memasuki Tie-break!' : 'Entering Tie-break!');
       }, 900);
       return;
     }
 
-    window.soundEngine?.announceGame(teamWinnerName, gamesA, gamesB);
+    globalThis.soundEngine?.announceGame(teamWinnerName, gamesA, gamesB);
     if (this.side_switch_alert) {
-      setTimeout(() => window.soundEngine?.announceSideSwitch(), 950);
+      if (globalThis.soundEngine) setTimeout(() => globalThis.soundEngine.announceSideSwitch(), 950);
     }
   }
 
@@ -540,7 +562,7 @@ class MatchScorer {
       this.is_tiebreak = true;
     }
 
-    window.soundEngine?.announceSet(winnerName, this.sets_history.length, setsWonA, setsWonB);
+    globalThis.soundEngine?.announceSet(winnerName, this.sets_history.length, setsWonA, setsWonB);
   }
 
   finishMatch(winner) {
@@ -550,7 +572,7 @@ class MatchScorer {
     this.duration_minutes = Math.max(1, Math.round((this.end_time - this.start_time) / 60000));
 
     const winnerName = winner === 'team_a' ? this.team_a.name : this.team_b.name;
-    window.soundEngine?.announceMatch(winnerName);
+    globalThis.soundEngine?.announceMatch(winnerName);
   }
 
   // Win by Walkover (W.O.), Disqualification (DQ), or Retirement (RET)
@@ -589,12 +611,12 @@ class MatchScorer {
     }
 
     const winnerName = winnerTeam === 'team_a' ? this.team_a.name : this.team_b.name;
-    window.soundEngine?.announceWalkoverWin(winnerName, this.win_reason);
+    globalThis.soundEngine?.announceWalkoverWin(winnerName, this.win_reason);
   }
 
   announceCurrentScore() {
     const isGold = this.isGoldenPoint();
-    window.soundEngine?.announceScore(
+    globalThis.soundEngine?.announceScore(
       this.getDisplayPoint('team_a'),
       this.getDisplayPoint('team_b'),
       this.server === 'team_a',
@@ -668,7 +690,9 @@ class MatchScorer {
       tournament_match_id: this.tournament_match_id,
       tournament_name: this.tournament_name,
       court_id: this.court_id || 'court_1',
-      date: new Date().toISOString().replace('T', ' ').substring(0, 19),
+      date: this.start_time.toISOString().replace('T', ' ').substring(0, 19),
+      start_time: this.start_time.toISOString(),
+      end_time: this.end_time?.toISOString() || null,
       updated_at_ms: Date.now(),
       name: `${this.team_a.name} vs ${this.team_b.name}`,
       sport: this.sport,
@@ -738,4 +762,6 @@ class MatchScorer {
   }
 }
 
-window.MatchScorer = MatchScorer;
+if (typeof window !== "undefined") window.MatchScorer = MatchScorer;
+
+export { MatchScorer };

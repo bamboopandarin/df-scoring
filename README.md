@@ -10,8 +10,7 @@ Aplikasi ini dibuat khusus untuk menyelesaikan permasalahan mengingat skor atau 
 ### 1. 🎾 Papan Skor Langsung Lapangan (Live Courtside Scoring)
 - **Perhitungan Skor Resmi Tennis & Padel**:
   - Skor poin standar: `0 (Love) -> 15 -> 30 -> 40 -> Deuce -> Advantage (AD) -> Game`.
-  - **Tombol Cepat DEUCE (40 - 40)**: Tombol instan `⚡ SET DEUCE (40-40)` untuk langsung melompat ke skor 40-40 jika terjadi deuce di lapangan.
-  - **🏆 Kemenangan W.O. / Diskualifikasi / Cedera**:
+    - **🏆 Kemenangan W.O. / Diskualifikasi / Cedera**:
     - Tombol khusus **"🏆 Menang W.O. / Diskualifikasi"** di action bar.
     - Opsi alasan: **Diskualifikasi (DQ)**, **Walkover (W.O. - lawan tidak hadir/terlambat)**, atau **Mundur karena Cedera (RET)**.
     - Otomatis mencatat status kemenangan dan menyuarakan wasit.
@@ -19,12 +18,11 @@ Aplikasi ini dibuat khusus untuk menyelesaikan permasalahan mengingat skor atau 
     - **🎾 Mode Deuce Standar (Advantage)**: Harus menang selisih 2 poin (40-40 -> AD -> Game, atau AD -> 40-40 Deuce).
     - **⭐ Mode Golden Point (Punto de Oro / No-Ad)**: 1 poin penentu pemenang game langsung. Bisa di-switch kapan saja via tombol di layar skor!
   - **Sistem Tie-break & Super Tie-break**: Otomatis aktif saat skor game seimbang pada target set.
-- **🏟️ Multi-Lapangan & Multi-Device Scoring (HP 1 & HP 2 Independen)**:
-  - Header dilengkapi pilihan **Lapangan 1 (HP 1)**, **Lapangan 2 (HP 2)**, dan **Lapangan 3**.
-  - Wasit di Lapangan 1 menggunakan HP 1 untuk scoring Court 1.
-  - Wasit di Lapangan 2 menggunakan HP 2 untuk scoring Court 2 secara bersamaan tanpa tabrakan data!
-  - Tiap lapangan menyimpan statusnya masing-masing.
-  - **Tombol "📺 Pantau Multi-Court"**: Menampilkan pemantau langsung (Live Monitor) multi-lapangan secara real-time dalam satu layar.
+- **🏟️ Tiga lapangan dengan skor bersama**
+  - Pilih Lapangan 1, 2, atau 3 dari HP mana pun. Setiap lapangan kosong sampai seseorang membuat pertandingan.
+  - Satu pertandingan aktif per lapangan. Pertandingan di lapangan lain bisa berjalan bersamaan.
+  - Panel Pemain, Panel Admin, dan Pantau Lapangan menampilkan pertandingan dari database yang sama. Skor pada layar perangkat lain diperbarui otomatis.
+  - **Selesaikan & Simpan Match** mencatat hasil, memajukan bagan bila berlaku, lalu mengosongkan lapangan. Untuk mengakhiri lebih awal, pilih pemenangnya.
 - **Fleksibilitas Mini Game & Jumlah Game per Set**:
   - Pilihan jumlah game per set bebas: **1 Game (Mini / Sudden Death)**, **2 Game**, **3 Game (Fast Mini Set)**, **4 Game (Short Set)**, **6 Game (Standar Resmi)**, hingga opsi **Kustom (Angka Bebas)**.
   - Target game dapat diubah langsung saat pertandingan berjalan tanpa perlu me-reset skor.
@@ -78,46 +76,24 @@ Aplikasi ini dibuat khusus untuk menyelesaikan permasalahan mengingat skor atau 
 
 ---
 
-## 🚀 Cara Menjalankan Aplikasi
+## Deploy ke Cloudflare Pages
 
-### Cara Termudah (Windows):
-Cukup **klik dua kali** file:
-```
-start.bat
-```
-Browser akan otomatis terbuka dan menampilkan aplikasi di:
-`http://localhost:8000`
+Gunakan `dfscoring123-static-deploy.zip` di project Direct Upload `dfscoring123`. Database `df-scoring` sudah terhubung ke Production melalui binding `DF_SCORING_DB`. Worker membuat tabel yang dibutuhkan saat pertama kali dijalankan. Untuk project baru, buat dan pasang binding D1 yang sama sebelum mengunggah ZIP.
 
----
+1. Di **Workers & Pages → dfscoring123 → Settings → Production → Variables and secrets**, tambahkan `DF_ADMIN_PASSWORD` dengan tipe **Secret**. Masukkan password bersama untuk semua admin. Admin bisa memakai nama masing-masing. Akun email dan Google bisa masuk setelah database terhubung, meskipun secret admin belum diisi.
+2. Untuk menyalakan **Masuk Google**, buat OAuth Client ID bertipe **Web application** di Google Auth Platform. Daftarkan `https://dfscoring123.pages.dev` di **Authorized JavaScript origins**. Untuk anggota umum, pilih audience **External** dan publikasikan aplikasi OAuth jika sebelumnya dalam mode Testing. Pakai Client ID sebagai variable `GOOGLE_CLIENT_ID` di Cloudflare atau isi **Google OAuth Client ID** di panel Pengaturan. Pengaturan Cloudflare didahulukan jika keduanya diisi. Alur ini hanya menggunakan Client ID.
+3. Buka **Create deployment**, pilih **Production**, lalu unggah ZIP. Untuk deploy lewat Wrangler, gunakan output `static` dan database D1 yang tertera di `wrangler.toml`. Production perlu deployment baru agar binding dan perubahan variable dari dashboard aktif.
+4. Masuk ulang dari dua HP di URL Pages yang sama. Coba daftar dengan email dan password, login admin, serta tombol Google jika Client ID sudah aktif. Buat match di Lapangan 3, ubah skor di satu HP, lalu cek dan selesaikan dari HP lain.
 
-### Menjalankan via Terminal / Command Prompt:
-1. Pastikan Anda berada di direktori proyek:
-   ```bash
-   cd "d:\Padel Tennis Scoring"
-   ```
-2. Jalankan aplikasi dengan Python:
-   ```bash
-   python app.py
-   ```
-3. Buka browser ke:
-   ```
-   http://localhost:8000
-   ```
+Jika deployment lama memakai KV, pasang binding `DF_SCORING_KV` sebelum D1 pertama kali diakses agar pemain, riwayat, turnamen, dan pengaturan yang tersimpan di KV ikut disalin. Data dari cache deployment lama dapat dipulihkan melalui **Backup JSON** versi lama dan **Restore** pada versi baru. Tiga lapangan mulai kosong. Sesi lama memerlukan login ulang. Akun email baru memiliki password tersendiri. Akun yang dulu hanya dibuat dengan mengisi nama dan alamat email perlu mendaftar sekali atau masuk melalui Google.
 
----
+Referensi [binding Cloudflare D1](https://developers.cloudflare.com/pages/functions/bindings/#d1-databases), [unggah ZIP](https://developers.cloudflare.com/pages/get-started/direct-upload/), dan [penyiapan Google Identity Services](https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid).
 
-## 📱 Cara Membuka di Smartphone / Tablet di Lapangan
+## Jalankan di komputer
 
-Aplikasi dapat diakses oleh siapa saja di lapangan menggunakan HP masing-masing melalui jaringan Wi-Fi / Hotspot yang sama:
-1. Hubungkan HP ke Wi-Fi atau Hotspot laptop Anda.
-2. Buka browser HP (Chrome / Safari), lalu ketik alamat IP laptop Anda:
-   ```
-   http://192.168.1.3:8000
-   ```
-   *(Alamat IP lokal yang aktif ditampilkan di bagian atas aplikasi)*
-3. Anda bisa mengoperasikan skor atau melihat pertandingan langsung dari pinggir lapangan!
+Gunakan Node.js 24 atau lebih baru. Jalankan `start.bat` atau `python app.py`, lalu buka `http://localhost:8000`. Jika ingin menguji login admin, buat file lokal `.dev.vars` berisi `DF_ADMIN_PASSWORD=PASSWORD_LOKAL_ANDA`. Untuk menguji Google, tambahkan `GOOGLE_CLIENT_ID` dan daftarkan origin lokal pada OAuth client. Untuk menguji dari dua HP di jaringan Wi-Fi yang sama, gunakan alamat IP komputer pada port 8000. Server lokal menjalankan Worker yang sama dengan SQLite di `.wrangler/local-scoring.sqlite` dan mengimpor data lama dari `data/` saat pertama dijalankan.
 
----
+Jalankan `node --test tests/shared-scoring.test.mjs` untuk memeriksa autentikasi, sinkronisasi dua sesi, konflik skor, penyelesaian match, dan turnamen. Jalankan `python tools/package_pages.py --check` untuk membuat ulang ZIP setelah mengubah source dan menguji Worker yang benar-benar ada di dalam paket.
 
 ## 📋 Panduan Menghubungkan ke Google Sheets (1-2 Menit)
 

@@ -14,22 +14,8 @@ class TournamentManager {
   static createKnockoutTournament(name, sport, mode, participants, rules) {
     // participants is array of { id, name, photo_url, players?: [] }
     const count = participants.length;
-    // Find next power of 2 (4, 8, 16, 32)
-    let bracketSize = 4;
-    while (bracketSize < count && bracketSize < 32) {
-      bracketSize *= 2;
-    }
-
-    const seededParticipants = [...participants];
-    // Fill remaining with BYE if needed
-    while (seededParticipants.length < bracketSize) {
-      seededParticipants.push({
-        id: 'BYE_' + seededParticipants.length,
-        name: 'BYE (Lolos Otomatis)',
-        is_bye: true,
-        players: []
-      });
-    }
+    const bracketSize = 2 ** Math.ceil(Math.log2(count));
+    const firstRoundSize = bracketSize / 2;
 
     // Number of rounds
     const totalRounds = Math.log2(bracketSize);
@@ -38,8 +24,10 @@ class TournamentManager {
     // Round 1
     const round1Matches = [];
     for (let i = 0; i < bracketSize / 2; i++) {
-      const p1 = seededParticipants[i * 2];
-      const p2 = seededParticipants[i * 2 + 1];
+      const p1 = participants[i];
+      const p2 = participants[i + firstRoundSize] || {
+        id: 'BYE_' + i, name: 'BYE (Lolos Otomatis)', is_bye: true, players: []
+      };
 
       const matchId = `r1_m${i + 1}`;
       const isByeMatch = p2.is_bye;
@@ -191,7 +179,7 @@ class TournamentManager {
       if (matchFound) break;
     }
 
-    if (!matchFound) return false;
+    if (!this.isPlayable(matchFound)) return false;
 
     matchFound.status = 'completed';
     matchFound.winner = matchData.winner; // 'team_a' or 'team_b'
@@ -201,7 +189,7 @@ class TournamentManager {
     matchFound.win_reason = matchData.win_reason || '';
 
     // If won by disqualification or walkover, show clear note
-    if (matchData.win_type) {
+    if (matchData.win_type && matchData.win_type !== "normal") {
       matchFound.score_display = matchData.win_reason || (matchData.win_type === 'disqualification' ? 'W.O. (Diskualifikasi)' : 'W.O.');
     } else if (matchData.sets_history && matchData.sets_history.length > 0) {
       matchFound.score_display = matchData.sets_history.map(s => `${s.team_a}-${s.team_b}`).join(', ');
@@ -226,9 +214,48 @@ class TournamentManager {
         tournament.champion_name = matchFound.winner_participant?.name || 'Juara';
         tournament.status = 'completed';
       }
+    } else if (tournament.rounds.every(round => round.matches.every(match => match.status === 'completed'))) {
+      tournament.champion = this.calculateStandings(tournament)[0]?.participant || null;
+      tournament.champion_name = tournament.champion?.name || null;
+      tournament.status = 'completed';
     }
 
     return true;
+  }
+
+  static normalize(tournament) {
+    if (Array.isArray(tournament.rounds)) return tournament;
+    const rounds = tournament.bracket?.rounds || [{ round_number: 1, matches: tournament.schedule || [] }];
+    return {
+      ...tournament,
+      rounds: rounds.map((round, index) => ({
+        ...round,
+        round_number: round.round_number || index + 1,
+        matches: round.matches.map(match => ({
+          ...match,
+          team_a: match.team_a || match.player_a,
+          team_b: match.team_b || match.player_b,
+          winner: typeof match.winner === 'object' && match.winner
+            ? (match.winner.id === (match.team_a || match.player_a)?.id ? 'team_a' : 'team_b')
+            : match.winner,
+          score_display: match.score_display || match.score_summary || 'vs'
+        }))
+      }))
+    };
+  }
+
+  static findMatch(tournament, id) {
+    return tournament?.rounds.flatMap(round => round.matches).find(match => match.id === id);
+  }
+
+  static isPlayable(match) {
+    return Boolean(match?.team_a && match.team_b && !match.team_a.is_bye && !match.team_b.is_bye
+      && match.status !== 'completed');
+  }
+
+  static hasResults(tournament) {
+    return this.normalize(tournament).rounds.some(round => round.matches.some(match =>
+      match.status === 'completed' && !match.team_a?.is_bye && !match.team_b?.is_bye));
   }
 
   // Record direct Walkover / Disqualification from bracket without starting match
@@ -277,91 +304,33 @@ class TournamentManager {
     return this.recordMatchResult(tournament, matchId, matchData);
   }
 
-  // Swap participants between two matches or slots in Round 1 (Custom Seeding request)
+  // Swap first-round slots, then propagate automatic BYE results again.
   static swapRound1Participants(tournament, matchIdx1, slot1, matchIdx2, slot2) {
-    if (!tournament.rounds || tournament.rounds.length === 0) return false;
-    const r1 = tournament.rounds[0];
-    const m1 = r1.matches[matchIdx1];
-    const m2 = r1.matches[matchIdx2];
-    if (!m1 || !m2) return false;
+    if (this.hasResults(tournament)) {
+      return { success: false, message: 'Bagan sudah memiliki hasil pertandingan.' };
+    }
+    const [firstRound, nextRound] = tournament.rounds;
+    const m1 = firstRound.matches[matchIdx1];
+    const m2 = firstRound.matches[matchIdx2];
+    if (!m1?.[slot1] || !m2?.[slot2]) return { success: false, message: 'Slot tidak tersedia.' };
 
-    // Only allow swapping pending matches
-    if (m1.status === 'completed' || m2.status === 'completed') {
-      return { success: false, message: 'Tidak dapat menukar pertandingan yang sudah selesai!' };
+    [m1[slot1], m2[slot2]] = [m2[slot2], m1[slot1]];
+    if ([m1, m2].some(match => match.team_a.is_bye && match.team_b.is_bye)) {
+      [m1[slot1], m2[slot2]] = [m2[slot2], m1[slot1]];
+      return { success: false, message: 'Satu pertandingan harus memiliki minimal satu peserta.' };
     }
 
-    const temp = m1[slot1];
-    m1[slot1] = m2[slot2];
-    m2[slot2] = temp;
-
-    // Check if any was a BYE
-    if (m1.team_b && m1.team_b.is_bye) {
-      m1.winner = 'team_a';
-      m1.winner_participant = m1.team_a;
-      m1.status = 'completed';
-      m1.score_display = 'BYE';
-    } else if (m1.status !== 'completed') {
-      m1.winner = null;
-      m1.winner_participant = null;
-      m1.score_display = 'vs';
-    }
-
-    if (m2.team_b && m2.team_b.is_bye) {
-      m2.winner = 'team_a';
-      m2.winner_participant = m2.team_a;
-      m2.status = 'completed';
-      m2.score_display = 'BYE';
-    } else if (m2.status !== 'completed') {
-      m2.winner = null;
-      m2.winner_participant = null;
-      m2.score_display = 'vs';
-    }
-
-    return { success: true };
-  }
-
-  // Re-shuffle non-completed participants in Round 1
-  static reshuffleRound1(tournament) {
-    if (!tournament.rounds || tournament.rounds.length === 0) return false;
-    const r1 = tournament.rounds[0];
-
-    // Check if any match is already completed (other than byes)
-    const anyPlayed = r1.matches.some(m => m.status === 'completed' && !m.team_b?.is_bye);
-    if (anyPlayed) {
-      return { success: false, message: 'Sebagian pertandingan sudah selesai, tidak bisa diacak ulang!' };
-    }
-
-    // Collect all real participants
-    const realParticipants = tournament.participants.filter(p => !p.is_bye);
-    const shuffled = [...realParticipants].sort(() => 0.5 - Math.random());
-
-    // Rebuild bracket size
-    let bracketSize = tournament.bracket_size || 4;
-    while (shuffled.length < bracketSize) {
-      shuffled.push({ id: 'BYE_' + shuffled.length, name: 'BYE (Lolos Otomatis)', is_bye: true, players: [] });
-    }
-
-    for (let i = 0; i < bracketSize / 2; i++) {
-      const p1 = shuffled[i * 2];
-      const p2 = shuffled[i * 2 + 1];
-      const m = r1.matches[i];
-      if (m) {
-        m.team_a = p1;
-        m.team_b = p2;
-        if (p2.is_bye) {
-          m.winner = 'team_a';
-          m.winner_participant = p1;
-          m.status = 'completed';
-          m.score_display = 'BYE';
-        } else {
-          m.winner = null;
-          m.winner_participant = null;
-          m.status = 'pending';
-          m.score_display = 'vs';
-        }
+    firstRound.matches.forEach((match, index) => {
+      match.winner = match.team_a.is_bye ? 'team_b' : match.team_b.is_bye ? 'team_a' : null;
+      match.winner_participant = match.winner ? match[match.winner] : null;
+      match.status = match.winner ? 'completed' : 'pending';
+      match.score_display = match.winner ? 'BYE' : 'vs';
+      match.sets_history = [];
+      if (nextRound) {
+        const slot = index % 2 === 0 ? 'team_a' : 'team_b';
+        nextRound.matches[Math.floor(index / 2)][slot] = match.winner_participant;
       }
-    }
-
+    });
     return { success: true };
   }
 
@@ -369,7 +338,7 @@ class TournamentManager {
   static calculateStandings(tournament) {
     if (tournament.format !== 'round_robin') return [];
 
-    const statsMap = {};
+    const statsMap = Object.create(null);
     tournament.participants.forEach(p => {
       statsMap[p.id] = {
         participant: p,
@@ -404,8 +373,9 @@ class TournamentManager {
             const gB = parseInt(s.team_b) || 0;
             gamesA += gA;
             gamesB += gB;
-            if (gA > gB) setsA++;
-            else if (gB > gA) setsB++;
+            if (s.partial) return;
+            if (s.winner === 'team_a' || gA > gB) setsA++;
+            else if (s.winner === 'team_b' || gB > gA) setsB++;
           });
 
           statsMap[aId].sets_won += setsA;
@@ -446,4 +416,6 @@ class TournamentManager {
   }
 }
 
-window.TournamentManager = TournamentManager;
+if (typeof window !== "undefined") window.TournamentManager = TournamentManager;
+
+export { TournamentManager };

@@ -2,7 +2,7 @@ name = "dfscoring123"
 pages_build_output_dir = "static"
 compatibility_date = "2024-11-01"
 
-[[kv_namespaces]]
-binding = "DF_SCORING_KV"
-id = "d5a2a43f74bf465d990147233451898e"
-preview_id = "d5a2a43f74bf465d990147233451898e"
+[[d1_databases]]
+binding = "DF_SCORING_DB"
+database_name = "df-scoring"
+database_id = "e4299786-1b8f-40ce-811c-d2c505b1bed6"

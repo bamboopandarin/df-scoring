@@ -1,41 +1,46 @@
 /**
  * DF Scoring PRO — Main Application Logic (v3.0)
- * Zero-Lag Local-First Courtside Scoring, Google Member & Admin Authentication,
+ * Shared Courtside Scoring, Google Member & Admin Authentication,
  * Comprehensive Admin Command Center, Multi-Court Live Sync, Tournament Engine & Google Sheets.
  */
 
-const ADMIN_PASSWORDS = ['12345678910', '1234567890'];
+const DEFAULT_COURTS = ['court_1', 'court_2', 'court_3'].map((id, index) => ({
+  id, name: `Lapangan ${index + 1}`, active_match: null
+}));
 
 const AppState = {
   currentTab: 'scorer',
-  currentCourtId: localStorage.getItem('padel_active_court_id') || 'court_1',
+  currentCourtId: DEFAULT_COURTS.some(court => court.id === localStorage.getItem('padel_active_court_id'))
+    ? localStorage.getItem('padel_active_court_id') : 'court_1',
   currentUser: null, // { id, name, email, picture, role: 'admin' | 'member', court_id, player_id }
   loginSelectedRole: 'member',
+  memberAuthMode: 'login',
 
   scorer: null,
   players: [],
   tournaments: [],
   matches: [],
-  courts: [],
+  courts: DEFAULT_COURTS,
   users: [],
   settings: {},
   systemInfo: {},
   selectedTournament: null,
 
-  matchTimerInterval: null,
   matchDurationSecs: 0,
   tourneyDoublesTeams: [],
-  modalShown: false,
+  finishContext: null,
+  courtRevision: -1,
+  courtAcknowledgements: new Map(),
+  dataRevision: -1,
+  bootstrapPromise: null,
+  polling: false,
+  pendingCourtAction: false,
 
   // Dirty-check hashes for zero-lag DOM updates
   lastHeaderHashA: '',
   lastHeaderHashB: '',
   lastPointA: '',
   lastPointB: '',
-
-  // Debounced network court sync
-  courtSyncTimer: null,
-  courtSyncAbortCtrl: null,
 
   // Voice Slogan Recording
   mediaRecorder: null,
@@ -45,10 +50,6 @@ const AppState = {
   recordDurationSecs: 0,
   lastWinnerData: null,
 
-  // Live polling intervals
-  multiCourtPollingInterval: null,
-  adminPollingInterval: null,
-
   // Screen Wake Lock for courtside phones
   wakeLock: null
 };
@@ -57,110 +58,85 @@ const AppState = {
 // 1. INSTANT BOOTSTRAP & ZERO-LAG INITIALIZATION
 // ============================================================================
 document.addEventListener('DOMContentLoaded', async () => {
-  // 1. Hydrate from localStorage cache immediately (< 5ms) so UI is instant
-  hydrateFromLocalCache();
-
-  // 2. Setup UI listeners, sunlight mode & court selector immediately
   setupNavigation();
-  initCourtSelector();
-  if (localStorage.getItem('sunlight_mode') === 'true') {
-    document.body.classList.add('sunlight-mode');
-  }
+  populateCourtDropdowns();
+  if (localStorage.getItem('sunlight_mode') === 'true') document.body.classList.add('sunlight-mode');
+  startMatchTimer();
+  updateScoreboardUI(true);
 
-  // 3. Check Auth Session
-  initAuthSession();
-
-  // 4. Initialize or restore active court scorer immediately from local storage
-  await restoreOrInitCourtScorer(AppState.currentCourtId, false);
-  renderAll();
-
-  // 5. Fetch fresh server state via single-request /api/bootstrap in background
-  await fetchBootstrapData();
-
-  // 6. Request Screen Wake Lock so referee screen stays awake on court
+  await Promise.all([initAuthSession(), fetchBootstrapData()]);
   requestCourtWakeLock();
+  setInterval(() => { if (!document.hidden) pollSharedState(); }, 1500);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) pollSharedState(); });
 });
 
-function hydrateFromLocalCache() {
-  try {
-    const cachedPlayers = localStorage.getItem('df_cache_players');
-    if (cachedPlayers) AppState.players = JSON.parse(cachedPlayers) || [];
-
-    const cachedMatches = localStorage.getItem('df_cache_matches');
-    if (cachedMatches) AppState.matches = JSON.parse(cachedMatches) || [];
-
-    const cachedTourneys = localStorage.getItem('df_cache_tournaments');
-    if (cachedTourneys) AppState.tournaments = JSON.parse(cachedTourneys) || [];
-
-    const cachedSettings = localStorage.getItem('df_cache_settings');
-    if (cachedSettings) AppState.settings = JSON.parse(cachedSettings) || {};
-
-    const cachedCourts = localStorage.getItem('df_cache_courts');
-    if (cachedCourts) AppState.courts = JSON.parse(cachedCourts) || [];
-  } catch (e) {
-    console.warn('Cache hydration warning:', e);
-  }
-}
-
-function saveToLocalCache() {
-  try {
-    localStorage.setItem('df_cache_players', JSON.stringify(AppState.players || []));
-    localStorage.setItem('df_cache_matches', JSON.stringify(AppState.matches || []));
-    localStorage.setItem('df_cache_tournaments', JSON.stringify(AppState.tournaments || []));
-    localStorage.setItem('df_cache_settings', JSON.stringify(AppState.settings || {}));
-    localStorage.setItem('df_cache_courts', JSON.stringify(AppState.courts || []));
-  } catch (e) {}
-}
-
 async function fetchBootstrapData() {
-  setSyncIndicator('syncing');
-  const data = await apiGet('/api/bootstrap');
-  if (data && !data.error) {
-    AppState.systemInfo = data.info || {};
-    AppState.settings = data.settings || {};
-    AppState.players = data.players || [];
-    AppState.tournaments = data.tournaments || [];
-    AppState.matches = data.matches || [];
-    AppState.courts = data.courts || [];
-    AppState.users = data.users || [];
-    saveToLocalCache();
-  } else {
-    // Fallback parallel load if running against older backend
-    await Promise.all([
-      loadSystemInfo(),
-      loadSettings(),
-      loadPlayers(),
-      loadTournaments(),
-      loadMatches(),
-      loadCourts()
-    ]);
-    saveToLocalCache();
-  }
-
-  if (AppState.settings.voice_lang) {
-    window.soundEngine.setVoiceLang(AppState.settings.voice_lang);
-  }
-  if (AppState.settings.sound_enabled !== undefined) {
-    window.soundEngine.setSoundEnabled(AppState.settings.sound_enabled);
-  }
-  updateSoundIcon();
-  populateCourtDropdowns();
-  populateLoginPlayerPicker();
-  initGoogleIdentityClient();
-
-  // Check if server has a newer match for this court when local wasn't active
-  const localMatchJson = localStorage.getItem(`padel_court_match_${AppState.currentCourtId}`);
-  if (!localMatchJson && AppState.courts.length > 0) {
-    const serverCourt = AppState.courts.find(c => c.id === AppState.currentCourtId);
-    if (serverCourt && serverCourt.active_match && serverCourt.active_match.team_a_name) {
-      AppState.scorer = MatchScorer.fromJSON(serverCourt.active_match);
-      AppState.scorer.court_id = AppState.currentCourtId;
-      updateScoreboardUI(true);
+  if (AppState.bootstrapPromise) return AppState.bootstrapPromise;
+  AppState.bootstrapPromise = (async () => {
+    const data = await apiGet('/api/bootstrap', true);
+    if (!data || data.error) {
+      showAuthMessage('auth-service-message', data?.error || 'Server DF Scoring tidak terjangkau. Coba muat ulang halaman.');
+      document.getElementById('google-login-status').textContent = 'Masuk Google menunggu koneksi ke server.';
+      setSyncIndicator('offline');
+      return false;
     }
+    showAuthMessage('auth-service-message');
+    if (data.data_revision >= AppState.dataRevision) {
+      const oldClientId = AppState.settings.google_client_id;
+      AppState.dataRevision = data.data_revision;
+      AppState.systemInfo = data.info;
+      AppState.settings = data.settings;
+      AppState.players = data.players;
+      AppState.tournaments = data.tournaments;
+      AppState.matches = data.matches;
+      AppState.users = data.users;
+      window.soundEngine.setVoiceLang(data.settings.voice_lang || 'id-ID');
+      const localSound = localStorage.getItem('df_sound_enabled');
+      window.soundEngine.setSoundEnabled(localSound === null ? data.settings.sound_enabled : localSound === 'true');
+      updateSoundIcon();
+      if (!AppState.currentUser) populateLoginPlayerPicker();
+      if (oldClientId !== data.settings.google_client_id || !AppState.currentUser) initGoogleIdentityClient();
+      renderSharedData();
+    }
+    applyCourtSnapshot(data);
+    setSyncIndicator('online');
+    return true;
+  })();
+  try {
+    return await AppState.bootstrapPromise;
+  } finally {
+    AppState.bootstrapPromise = null;
   }
+}
 
-  setSyncIndicator('online');
+function renderSharedData() {
+  if (AppState.currentTab === 'players') renderPlayersTab();
+  if (AppState.currentTab === 'history') renderHistoryTab();
+  if (AppState.currentTab === 'tournaments') renderTournamentsList();
   if (AppState.currentTab === 'admin') renderAdminDashboard();
+  const bracket = document.getElementById('bracket-modal');
+  if (AppState.selectedTournament && !bracket.classList.contains('hidden')) {
+    const current = AppState.tournaments.find(tournament => tournament.id === AppState.selectedTournament.id);
+    if (current) viewTournamentBracket(current.id);
+    else bracket.classList.add('hidden');
+  }
+}
+
+async function pollSharedState() {
+  if (AppState.polling) return;
+  AppState.polling = true;
+  try {
+    const state = await apiGet(`/api/live?since=${AppState.courtRevision}`);
+    if (!state) {
+      setSyncIndicator('offline');
+      return;
+    }
+    if (state.courts) applyCourtSnapshot(state);
+    if (state.data_revision > AppState.dataRevision) await fetchBootstrapData();
+    else setSyncIndicator('online');
+  } finally {
+    AppState.polling = false;
+  }
 }
 
 function setSyncIndicator(state) {
@@ -171,7 +147,7 @@ function setSyncIndicator(state) {
     dot.textContent = '↻ SYNC';
   } else if (state === 'offline') {
     dot.className = 'inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-slate-800 text-slate-400 border border-slate-700';
-    dot.textContent = '⚡ LOKAL';
+    dot.textContent = '○ TERPUTUS';
   } else {
     dot.className = 'inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-500/30';
     dot.textContent = '● LIVE';
@@ -210,26 +186,17 @@ function toggleFullscreenMode() {
 // ============================================================================
 // 2. AUTHENTICATION & ROLE SYSTEM (MEMBER GOOGLE vs ADMIN 1..10)
 // ============================================================================
-function initAuthSession() {
-  const savedAuth = localStorage.getItem('df_scoring_auth_user');
-  renderSavedGoogleAccounts();
-  populateLoginPlayerPicker();
-
-  if (savedAuth) {
-    try {
-      const user = JSON.parse(savedAuth);
-      if (user && user.name && user.role) {
-        AppState.currentUser = user;
-        applyLoggedInUserUI();
-        document.getElementById('auth-gate-modal').classList.add('hidden');
-        return;
-      }
-    } catch (e) {}
+async function initAuthSession() {
+  const session = await apiGet('/api/auth/session');
+  if (AppState.currentUser) return;
+  AppState.currentUser = session?.user || null;
+  if (AppState.currentUser) {
+    applyLoggedInUserUI();
+    document.getElementById('auth-gate-modal').classList.add('hidden');
+  } else {
+    document.getElementById('auth-gate-modal').classList.remove('hidden');
+    selectLoginRole('member');
   }
-
-  // Show Login Gate if not authenticated
-  document.getElementById('auth-gate-modal').classList.remove('hidden');
-  selectLoginRole('member');
 }
 
 function selectLoginRole(role) {
@@ -270,247 +237,148 @@ function populateLoginPlayerPicker() {
   const sel = document.getElementById('member-login-player-link');
   if (!sel) return;
   const opts = (AppState.players || []).map(p =>
-    `<option value="${p.id}" data-name="${p.name}">${p.name} (${p.level || 'Member'})</option>`
+    `<option value="${escapeHTML(p.id)}" data-name="${escapeHTML(p.name)}">${escapeHTML(p.name)} (${escapeHTML(p.level || 'Member')})</option>`
   ).join('');
   sel.innerHTML = `<option value="">-- Pilih dari Daftar Pemain (Opsional) --</option>` + opts;
 }
 
-function handleMemberSelectRosterPlayer(playerId) {
-  if (!playerId) return;
-  const p = (AppState.players || []).find(x => x.id === playerId);
-  if (!p) return;
-  const nameInput = document.getElementById('member-google-name');
-  const emailInput = document.getElementById('member-google-email');
-  if (nameInput && !nameInput.value.trim()) {
-    nameInput.value = p.name;
-  }
-  if (emailInput && !emailInput.value.trim()) {
-    const slug = p.name.toLowerCase().replace(/[^a-z0-9]/g, '.');
-    emailInput.value = `${slug}@gmail.com`;
-  }
+function showAuthMessage(id, message = '') {
+  const element = document.getElementById(id);
+  element.textContent = message;
+  element.classList.toggle('hidden', !message);
 }
 
-function getSavedGoogleAccounts() {
-  try {
-    return JSON.parse(localStorage.getItem('df_saved_google_accounts') || '[]');
-  } catch (e) {
-    return [];
-  }
+function setMemberAuthMode(mode) {
+  const registering = mode === 'register';
+  AppState.memberAuthMode = registering ? 'register' : 'login';
+  document.getElementById('member-mode-login').setAttribute('aria-pressed', String(!registering));
+  document.getElementById('member-mode-register').setAttribute('aria-pressed', String(registering));
+  document.getElementById('member-name-field').classList.toggle('hidden', !registering);
+  document.getElementById('member-auth-name').required = registering;
+  const password = document.getElementById('member-auth-password');
+  password.autocomplete = registering ? 'new-password' : 'current-password';
+  password.minLength = registering ? 8 : 1;
+  document.getElementById('member-password-hint').classList.toggle('hidden', !registering);
+  document.getElementById('member-auth-submit').textContent = registering ? 'Buat Akun dan Masuk' : 'Masuk';
+  showAuthMessage('member-login-error');
 }
 
-function saveGoogleAccountToDevice(account) {
-  try {
-    let list = getSavedGoogleAccounts();
-    list = list.filter(a => a.email.toLowerCase() !== account.email.toLowerCase());
-    list.unshift({
-      name: account.name,
-      email: account.email,
-      picture: account.picture,
-      player_id: account.player_id || null
-    });
-    if (list.length > 5) list = list.slice(0, 5);
-    localStorage.setItem('df_saved_google_accounts', JSON.stringify(list));
-  } catch (e) {}
+function memberLoginOptions() {
+  return {
+    court_id: document.getElementById('member-login-court').value || AppState.currentCourtId,
+    player_id: document.getElementById('member-login-player-link').value || null
+  };
 }
 
-function renderSavedGoogleAccounts() {
-  const wrap = document.getElementById('saved-google-accounts-wrap');
-  const listEl = document.getElementById('saved-google-accounts-list');
-  if (!wrap || !listEl) return;
-
-  const accounts = getSavedGoogleAccounts();
-  if (accounts.length === 0) {
-    wrap.classList.add('hidden');
+let googleScript;
+let renderedGoogleClientId = '';
+async function initGoogleIdentityClient() {
+  const clientId = AppState.settings.google_client_id;
+  const container = document.getElementById('google-gsi-button-wrap');
+  const status = document.getElementById('google-login-status');
+  if (!clientId) {
+    renderedGoogleClientId = '';
+    container.replaceChildren();
+    container.classList.add('hidden');
+    status.classList.remove('hidden');
+    status.textContent = 'Masuk Google belum diaktifkan. Anda dapat membuat akun dan masuk dengan email.';
     return;
   }
+  if (renderedGoogleClientId === clientId) return;
+  status.textContent = 'Memuat tombol Google…';
+  status.classList.remove('hidden');
 
-  wrap.classList.remove('hidden');
-  listEl.innerHTML = accounts.map((acc, idx) => `
-    <button type="button" onclick="quickLoginWithSavedGoogle(${idx})" class="w-full p-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-emerald-500/50 rounded-xl flex items-center justify-between transition text-left">
-      <div class="flex items-center space-x-2.5 truncate">
-        <img src="${acc.picture || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(acc.name)}`}" class="w-8 h-8 rounded-full object-cover border border-emerald-500/40">
-        <div class="truncate">
-          <div class="text-xs font-bold text-white truncate">${acc.name}</div>
-          <div class="text-[10px] text-slate-400 truncate">${acc.email}</div>
-        </div>
-      </div>
-      <span class="text-[10px] font-bold text-emerald-400 px-2 py-0.5 bg-emerald-950 rounded-lg">Masuk →</span>
-    </button>
-  `).join('');
-}
-
-async function quickLoginWithSavedGoogle(index) {
-  const accounts = getSavedGoogleAccounts();
-  const acc = accounts[index];
-  if (!acc) return;
-  const courtId = document.getElementById('member-login-court')?.value || AppState.currentCourtId;
-  await completeUserLogin({
-    name: acc.name,
-    email: acc.email,
-    picture: acc.picture,
-    role: 'member',
-    provider: 'google',
-    player_id: acc.player_id || null,
-    court_id: courtId
-  });
-}
-
-function initGoogleIdentityClient() {
-  const clientId = AppState.settings?.google_client_id;
-  const gsiWrap = document.getElementById('google-gsi-button-wrap');
-  if (!clientId || !window.google || !window.google.accounts || !gsiWrap) return;
-
-  try {
-    window.google.accounts.id.initialize({
-      client_id: clientId,
-      callback: handleGoogleCredentialResponse
+  if (!window.google?.accounts?.id && !googleScript) {
+    googleScript = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.onload = resolve;
+      script.onerror = () => {
+        script.remove();
+        reject(new Error('Google Identity Services unavailable'));
+      };
+      document.head.append(script);
     });
-    gsiWrap.classList.remove('hidden');
-    window.google.accounts.id.renderButton(gsiWrap, {
-      theme: 'filled_black',
-      size: 'large',
-      width: 320,
-      text: 'continue_with'
-    });
-  } catch (e) {
-    console.warn('GSI init warning:', e);
   }
-}
-
-function decodeJwtPayload(token) {
   try {
-    const base64Url = token.split('.')[1];
-    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-    const jsonPayload = decodeURIComponent(
-      atob(base64)
-        .split('')
-        .map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-        .join('')
-    );
-    return JSON.parse(jsonPayload);
-  } catch (e) {
-    return null;
+    await googleScript;
+    if (clientId !== AppState.settings.google_client_id || renderedGoogleClientId === clientId) return;
+    window.google.accounts.id.initialize({ client_id: clientId, callback: handleGoogleCredentialResponse });
+    container.replaceChildren();
+    container.classList.remove('hidden');
+    const width = Math.max(200, Math.min(320, container.clientWidth || 280));
+    window.google.accounts.id.renderButton(container, { theme: 'filled_black', size: 'large', width, text: 'continue_with' });
+    renderedGoogleClientId = clientId;
+    status.classList.add('hidden');
+  } catch {
+    googleScript = null;
+    renderedGoogleClientId = '';
+    container.classList.add('hidden');
+    status.textContent = 'Tombol Google gagal dimuat. Muat ulang halaman atau masuk dengan email.';
   }
 }
 
 async function handleGoogleCredentialResponse(response) {
-  const payload = decodeJwtPayload(response.credential);
-  if (!payload) return;
-  const courtId = document.getElementById('member-login-court')?.value || AppState.currentCourtId;
-  await completeUserLogin({
-    name: payload.name || 'Google Member',
-    email: payload.email || 'member@gmail.com',
-    picture: payload.picture || '',
-    role: 'member',
-    provider: 'google_oauth',
-    court_id: courtId
-  });
-}
-
-async function handleMemberGoogleLogin(e) {
-  if (e) e.preventDefault();
-  const name = document.getElementById('member-google-name').value.trim();
-  const email = document.getElementById('member-google-email').value.trim().toLowerCase();
-  const courtId = document.getElementById('member-login-court').value || 'court_1';
-  const playerId = document.getElementById('member-login-player-link').value || null;
-
-  if (!name || !email) {
-    alert('Masukkan Nama dan Email Google Anda terlebih dahulu!');
+  if (!response?.credential) {
+    showAuthMessage('member-login-error', 'Google tidak mengirim sesi login. Pilih akun Google lagi.');
     return;
   }
-
-  const linkedPlayer = playerId ? (AppState.players || []).find(p => p.id === playerId) : null;
-  const picture = (linkedPlayer && linkedPlayer.photo_url) || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(name)}`;
-
-  saveGoogleAccountToDevice({ name, email, picture, player_id: playerId });
-
-  await completeUserLogin({
-    name,
-    email,
-    picture,
-    role: 'member',
-    provider: 'google',
-    player_id: playerId,
-    court_id: courtId
-  });
+  await completeUserLogin('google', { ...memberLoginOptions(), credential: response.credential }, 'member-login-error');
 }
 
-async function handleAdminLogin(e) {
-  if (e) e.preventDefault();
-  const name = document.getElementById('admin-login-name').value.trim() || 'Super Admin DF';
-  const pwd = document.getElementById('admin-login-password').value.trim();
-  const errEl = document.getElementById('admin-login-error');
-
-  if (!ADMIN_PASSWORDS.includes(pwd)) {
-    if (errEl) {
-      errEl.textContent = '❌ Password Admin salah! Silakan periksa kembali password Anda.';
-      errEl.classList.remove('hidden');
-    }
-    window.soundEngine?.playUndoBeep();
-    return;
+async function handleMemberAuth(event) {
+  event.preventDefault();
+  const password = document.getElementById('member-auth-password');
+  const user = await completeUserLogin(AppState.memberAuthMode, {
+    ...memberLoginOptions(),
+    email: document.getElementById('member-auth-email').value.trim(),
+    name: document.getElementById('member-auth-name').value.trim(),
+    password: password.value
+  }, 'member-login-error', event.currentTarget.querySelector('[type="submit"]'));
+  if (user) {
+    password.value = '';
+    setMemberAuthMode('login');
   }
+}
 
-  if (errEl) errEl.classList.add('hidden');
-
-  await completeUserLogin({
-    name,
-    email: 'admin@dfscoring.pro',
-    picture: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(name)}`,
+async function handleAdminLogin(event) {
+  event.preventDefault();
+  const password = document.getElementById('admin-login-password');
+  const user = await completeUserLogin('login', {
+    name: document.getElementById('admin-login-name').value.trim(),
     role: 'admin',
-    password: pwd,
-    provider: 'admin_password',
+    password: password.value,
     court_id: AppState.currentCourtId
-  });
+  }, 'admin-login-error', event.currentTarget.querySelector('[type="submit"]'));
+  if (user) password.value = '';
 }
 
-async function completeUserLogin(loginPayload) {
-  const userObj = {
-    id: 'u_' + Math.random().toString(36).substring(2, 9),
-    name: loginPayload.name,
-    email: loginPayload.email,
-    picture: loginPayload.picture || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(loginPayload.name)}`,
-    role: loginPayload.role,
-    provider: loginPayload.provider || 'google',
-    player_id: loginPayload.player_id || null,
-    court_id: loginPayload.court_id || AppState.currentCourtId,
-    last_login: new Date().toISOString().replace('T', ' ').substring(0, 19)
-  };
-
-  AppState.currentUser = userObj;
-  localStorage.setItem('df_scoring_auth_user', JSON.stringify(userObj));
-
-  // Switch court if member chose a specific court on login
-  if (loginPayload.court_id && loginPayload.court_id !== AppState.currentCourtId) {
-    await handleCourtSwitch(loginPayload.court_id);
-  }
-
-  // Stamp current scorer with logged-in user
-  if (AppState.scorer) {
-    AppState.scorer.scored_by = {
-      name: userObj.name,
-      email: userObj.email,
-      role: userObj.role
-    };
-  }
-
-  applyLoggedInUserUI();
-  document.getElementById('auth-gate-modal').classList.add('hidden');
-
-  // Sync login to backend in background
-  apiPost('/api/auth/login', loginPayload).then(res => {
-    if (res && res.user) {
-      AppState.currentUser = res.user;
-      localStorage.setItem('df_scoring_auth_user', JSON.stringify(res.user));
-      loadUsers();
+let loginInProgress = false;
+async function completeUserLogin(action, payload, feedback, button) {
+  if (loginInProgress) return null;
+  loginInProgress = true;
+  if (button) button.disabled = true;
+  showAuthMessage(feedback);
+  try {
+    const response = await apiPost('/api/auth/' + action, payload);
+    if (!response?.user) {
+      showAuthMessage(feedback, response?.error || response?.message || 'Koneksi ke server gagal. Coba lagi.');
+      return null;
     }
-  });
-
-  if (userObj.role === 'admin') {
-    showToast(`🛡️ Selamat datang, ${userObj.name}! Membuka Admin Command Center...`);
-    switchTab('admin');
-  } else {
-    showToast(`🎾 Selamat datang, ${userObj.name}! Siap mencatat skor di ${getCourtDisplayName(AppState.currentCourtId)}.`);
-    updateScoreboardUI(true);
+    AppState.currentUser = response.user;
+    AppState.dataRevision = -1;
+    applyLoggedInUserUI();
+    document.getElementById('auth-gate-modal').classList.add('hidden');
+    document.getElementById('modal-user-account').classList.add('hidden');
+    handleCourtSwitch(response.user.court_id);
+    switchTab(response.user.role === 'admin' ? 'admin' : 'scorer');
+    await fetchBootstrapData();
+    if (action === 'register') showToast('Akun berhasil dibuat.');
+    return response.user;
+  } finally {
+    loginInProgress = false;
+    if (button) button.disabled = false;
   }
 }
 
@@ -570,47 +438,44 @@ function openUserAccountModal() {
 
   const pwdInput = document.getElementById('quick-admin-pwd-input');
   if (pwdInput) pwdInput.value = '';
+  showAuthMessage('quick-admin-error');
 
   document.getElementById('modal-user-account').classList.remove('hidden');
 }
 
 async function handleQuickUpgradeToAdmin() {
-  const pwd = document.getElementById('quick-admin-pwd-input')?.value.trim() || '';
-  if (!ADMIN_PASSWORDS.includes(pwd)) {
-    alert('Password Admin salah!');
-    return;
-  }
-  document.getElementById('modal-user-account').classList.add('hidden');
-  await completeUserLogin({
-    name: AppState.currentUser?.name || 'Admin Utama',
-    email: AppState.currentUser?.email || 'admin@dfscoring.pro',
-    picture: AppState.currentUser?.picture || '',
+  const password = document.getElementById('quick-admin-pwd-input');
+  const user = await completeUserLogin('login', {
+    name: AppState.currentUser?.name,
     role: 'admin',
-    password: pwd,
-    provider: 'admin_password',
+    password: password.value,
     court_id: AppState.currentCourtId
-  });
+  }, 'quick-admin-error', document.getElementById('quick-admin-submit'));
+  if (user) password.value = '';
 }
 
-function handleLogout() {
-  localStorage.removeItem('df_scoring_auth_user');
+async function handleLogout() {
+  const response = await apiPost('/api/auth/logout', {});
+  if (!response || response.error) {
+    showToast('Gagal keluar. Periksa koneksi dan coba lagi.');
+    return;
+  }
   AppState.currentUser = null;
+  AppState.users = [];
+  switchTab('scorer');
   document.getElementById('modal-user-account').classList.add('hidden');
-  renderSavedGoogleAccounts();
-  populateLoginPlayerPicker();
-  const pwdInput = document.getElementById('admin-login-password');
-  if (pwdInput) pwdInput.value = '';
   document.getElementById('auth-gate-modal').classList.remove('hidden');
-  showToast('Anda telah keluar dari sesi.');
+  populateLoginPlayerPicker();
+  selectLoginRole('member');
 }
 
 // ============================================================================
 // 3. API HELPERS
 // ============================================================================
-async function apiGet(endpoint) {
+async function apiGet(endpoint, includeError = false) {
   try {
     const res = await fetch(endpoint, { cache: 'no-store' });
-    if (!res.ok) return null;
+    if (!res.ok && !includeError) return null;
     return await res.json();
   } catch (e) {
     console.warn('API GET Warning:', endpoint, e);
@@ -618,69 +483,39 @@ async function apiGet(endpoint) {
   }
 }
 
-async function apiPost(endpoint, body, signal = null) {
+async function apiWrite(endpoint, method, body) {
   try {
-    const opts = {
-      method: 'POST',
+    const response = await fetch(endpoint, {
+      method,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    };
-    if (signal) opts.signal = signal;
-    const res = await fetch(endpoint, opts);
-    return await res.json();
-  } catch (e) {
-    if (e.name !== 'AbortError') {
-      console.warn('API POST Warning:', endpoint, e);
-    }
-    return null;
-  }
-}
-
-async function apiPut(endpoint, body) {
-  try {
-    const res = await fetch(endpoint, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      body: body === undefined ? undefined : JSON.stringify(body)
     });
-    return await res.json();
-  } catch (e) {
-    console.warn('API PUT Warning:', endpoint, e);
+    if (response.status === 401 && !endpoint.startsWith('/api/auth/')) {
+      AppState.currentUser = null;
+      AppState.users = [];
+      switchTab('scorer');
+      document.getElementById('auth-gate-modal').classList.remove('hidden');
+      selectLoginRole('member');
+      showAuthMessage('member-login-error', 'Sesi sudah berakhir. Silakan masuk kembali.');
+    }
+    return {
+      ...(await response.json()),
+      commitRevision: Number(response.headers.get('X-DF-Revision')) || undefined,
+      httpStatus: response.status
+    };
+  } catch {
     return null;
   }
 }
 
-async function loadSystemInfo() {
-  AppState.systemInfo = (await apiGet('/api/info')) || {};
-}
+function apiPost(endpoint, body) { return apiWrite(endpoint, 'POST', body); }
+function apiPut(endpoint, body) { return apiWrite(endpoint, 'PUT', body); }
 
-async function loadSettings() {
-  AppState.settings = (await apiGet('/api/settings')) || {};
-}
-
-async function loadPlayers() {
-  AppState.players = (await apiGet('/api/players')) || [];
-  saveToLocalCache();
-}
-
-async function loadTournaments() {
-  AppState.tournaments = (await apiGet('/api/tournaments')) || [];
-  saveToLocalCache();
-}
-
-async function loadMatches() {
-  AppState.matches = (await apiGet('/api/matches')) || [];
-  saveToLocalCache();
-}
-
-async function loadCourts() {
-  AppState.courts = (await apiGet('/api/courts')) || [];
-  saveToLocalCache();
-}
-
-async function loadUsers() {
-  AppState.users = (await apiGet('/api/users')) || [];
-}
+async function loadSettings() { await fetchBootstrapData(); }
+async function loadPlayers() { await fetchBootstrapData(); }
+async function loadTournaments() { await fetchBootstrapData(); }
+async function loadMatches() { await fetchBootstrapData(); }
+async function loadUsers() { await fetchBootstrapData(); }
 
 // ============================================================================
 // 4. NAVIGATION & TAB MANAGEMENT
@@ -698,8 +533,7 @@ function setupNavigation() {
     soundBtn.addEventListener('click', () => {
       const current = window.soundEngine.soundEnabled;
       window.soundEngine.setSoundEnabled(!current);
-      AppState.settings.sound_enabled = !current;
-      apiPost('/api/settings', { sound_enabled: !current });
+      localStorage.setItem('df_sound_enabled', String(!current));
       updateSoundIcon();
       showToast(window.soundEngine.soundEnabled ? '🔊 Suara & Wasit Aktif' : '🔇 Suara Dimatikan');
     });
@@ -731,26 +565,18 @@ function updateSoundIcon() {
 }
 
 function switchTab(tab) {
-  // Gate Admin tab behind Admin role
-  if (tab === 'admin' && (!AppState.currentUser || AppState.currentUser.role !== 'admin')) {
-    const pwd = prompt('🛡️ Halaman ini khusus Admin Utama.\nMasukkan Password Admin:');
-    if (!pwd) return;
-    if (!ADMIN_PASSWORDS.includes(pwd.trim())) {
-      alert('❌ Password Admin salah!');
+  if (tab === 'admin' || tab === 'settings') {
+    if (!AppState.currentUser) {
+      document.getElementById('auth-gate-modal').classList.remove('hidden');
+      selectLoginRole('admin');
       return;
     }
-    completeUserLogin({
-      name: AppState.currentUser?.name || 'Admin Utama',
-      email: AppState.currentUser?.email || 'admin@dfscoring.pro',
-      picture: AppState.currentUser?.picture || '',
-      role: 'admin',
-      password: pwd.trim(),
-      provider: 'admin_password',
-      court_id: AppState.currentCourtId
-    });
-    return;
+    if (AppState.currentUser.role !== 'admin') {
+      openUserAccountModal();
+      return;
+    }
   }
-
+  if (tab !== 'scorer') closeFinishModal();
   AppState.currentTab = tab;
   document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
   const target = document.getElementById(`tab-${tab}`);
@@ -772,20 +598,7 @@ function switchTab(tab) {
     }
   });
 
-  // Manage Admin auto-polling interval
-  if (AppState.adminPollingInterval) {
-    clearInterval(AppState.adminPollingInterval);
-    AppState.adminPollingInterval = null;
-  }
-
-  if (tab === 'admin') {
-    refreshAdminDashboard(false);
-    AppState.adminPollingInterval = setInterval(() => {
-      if (AppState.currentTab === 'admin') {
-        refreshAdminLiveCourtsOnly();
-      }
-    }, 3500);
-  }
+  if (tab === 'admin') renderAdminDashboard();
   if (tab === 'tournaments') renderTournamentsList();
   if (tab === 'players') renderPlayersTab();
   if (tab === 'history') renderHistoryTab();
@@ -793,216 +606,118 @@ function switchTab(tab) {
 }
 
 // ============================================================================
-// 5. MULTI-COURT & DEBOUNCED ZERO-LAG SYNC
+// 5. SHARED COURTS
 // ============================================================================
-function initCourtSelector() {
-  populateCourtDropdowns();
-  const courtSelect = document.getElementById('header-court-select');
-  if (courtSelect) {
-    courtSelect.value = AppState.currentCourtId;
-  }
-}
-
 function populateCourtDropdowns() {
-  const defaultCourts = [
-    { id: 'court_1', name: 'Lapangan 1 (HP 1)' },
-    { id: 'court_2', name: 'Lapangan 2 (HP 2)' },
-    { id: 'court_3', name: 'Lapangan 3' }
-  ];
-  const merged = [...defaultCourts];
-  (AppState.courts || []).forEach(c => {
-    if (c && c.id && !merged.some(m => m.id === c.id)) {
-      merged.push({ id: c.id, name: c.name || getCourtDisplayName(c.id) });
-    }
-  });
-
-  const headerSel = document.getElementById('header-court-select');
-  const newMatchSel = document.getElementById('new-match-court-select');
-  const loginSel = document.getElementById('member-login-court');
-
-  if (headerSel) {
-    headerSel.innerHTML = merged.map(c =>
-      `<option value="${c.id}" class="bg-slate-900 text-white">${c.name}</option>`
-    ).join('');
-    headerSel.value = AppState.currentCourtId;
+  for (const id of ['header-court-select', 'new-match-court-select', 'member-login-court']) {
+    const select = document.getElementById(id);
+    if (!select) continue;
+    select.replaceChildren(...AppState.courts.map(court => new Option(court.name, court.id)));
+    select.value = AppState.currentCourtId;
   }
-  if (newMatchSel) {
-    newMatchSel.innerHTML = merged.map(c =>
-      `<option value="${c.id}">🏟️ ${c.name}</option>`
-    ).join('');
-    newMatchSel.value = AppState.currentCourtId;
-  }
-  if (loginSel) {
-    loginSel.innerHTML = merged.map(c =>
-      `<option value="${c.id}">🏟️ ${c.name}</option>`
-    ).join('');
-    loginSel.value = AppState.currentCourtId;
-  }
+  updateCourtAvailability();
 }
 
 function getCourtDisplayName(courtId) {
-  const found = (AppState.courts || []).find(c => c.id === courtId);
-  if (found && found.name) return found.name;
-  if (courtId === 'court_1') return 'Lapangan 1 (HP 1)';
-  if (courtId === 'court_2') return 'Lapangan 2 (HP 2)';
-  if (courtId === 'court_3') return 'Lapangan 3';
-  return `Lapangan ${String(courtId).replace('court_', '')}`;
+  return DEFAULT_COURTS.find(court => court.id === courtId)?.name || courtId;
 }
 
-async function restoreOrInitCourtScorer(courtId, fetchFromServer = true) {
+function updateCourtAvailability() {
+  const ready = AppState.courtRevision >= 0 && !AppState.pendingCourtAction;
+  const free = !AppState.courts.find(court => court.id === AppState.currentCourtId)?.active_match;
+  document.querySelectorAll('[data-new-match]').forEach(button => { button.disabled = !ready || !free; });
+  const select = document.getElementById('new-match-court-select');
+  for (const option of select.options) {
+    const occupied = AppState.courts.find(court => court.id === option.value)?.active_match;
+    option.disabled = Boolean(occupied);
+    option.textContent = getCourtDisplayName(option.value) + (occupied ? ' · Sedang dipakai' : '');
+  }
+  const submit = document.getElementById('new-match-submit');
+  submit.disabled = !ready || !select.value || select.selectedOptions[0]?.disabled;
+  document.getElementById('active-scoreboard').disabled = AppState.pendingCourtAction;
+  document.getElementById('finish-save-button').disabled = AppState.pendingCourtAction;
+}
+
+function renderCurrentCourt() {
+  const active = AppState.courts.find(court => court.id === AppState.currentCourtId)?.active_match;
+  if (AppState.scorer?.id === active?.id && AppState.scorer?.version === active?.version) {
+    updateScoreboardUI();
+    return;
+  }
+  if (AppState.finishContext) closeFinishModal();
+  document.getElementById('modal-walkover-win').classList.add('hidden');
+  document.getElementById('quick-target-games-modal').classList.add('hidden');
+  AppState.scorer = active ? MatchScorer.fromJSON(active) : null;
+  updateScoreboardUI(true);
+  renderMatchTimer();
+}
+
+function renderCourtViews() {
+  renderCurrentCourt();
+  updateCourtAvailability();
+  if (AppState.currentTab === 'admin') {
+    renderAdminKpiCards();
+    renderAdminLiveCourts();
+  }
+  if (!document.getElementById('modal-multi-court').classList.contains('hidden')) renderMultiCourtGrid();
+}
+
+function applyCourtSnapshot(state) {
+  if (state.revision <= AppState.courtRevision) return;
+  AppState.courtRevision = state.revision;
+  AppState.courts = state.courts.map(court => {
+    const acknowledged = AppState.courtAcknowledgements.get(court.id);
+    if (acknowledged?.revision > state.revision) return acknowledged.court;
+    AppState.courtAcknowledgements.delete(court.id);
+    return court;
+  });
+  renderCourtViews();
+}
+
+function handleCourtSwitch(courtId) {
+  if (!DEFAULT_COURTS.some(court => court.id === courtId)) return;
   AppState.currentCourtId = courtId;
   localStorage.setItem('padel_active_court_id', courtId);
-
-  const badge = document.getElementById('match-active-court-badge');
-  if (badge) {
-    badge.textContent = `🏟️ ${getCourtDisplayName(courtId).toUpperCase()}`;
-  }
-
-  // 1. Check local storage first (0ms latency)
-  const localMatchJson = localStorage.getItem(`padel_court_match_${courtId}`);
-  let restored = false;
-
-  if (localMatchJson) {
-    try {
-      const matchObj = JSON.parse(localMatchJson);
-      if (matchObj && (matchObj.team_a_name || matchObj.team_a)) {
-        AppState.scorer = MatchScorer.fromJSON(matchObj);
-        AppState.scorer.court_id = courtId;
-        AppState.matchDurationSecs = matchObj.duration_seconds || 0;
-        restored = true;
-      }
-    } catch (e) {
-      console.warn('Could not parse saved court match:', e);
-    }
-  }
-
-  // 2. If not local and fetchFromServer is enabled, check server
-  if (!restored && fetchFromServer) {
-    try {
-      const courts = (await apiGet('/api/courts')) || [];
-      AppState.courts = courts;
-      const court = courts.find(c => c.id === courtId);
-      if (court && court.active_match && (court.active_match.team_a_name || court.active_match.team_a)) {
-        AppState.scorer = MatchScorer.fromJSON(court.active_match);
-        AppState.scorer.court_id = courtId;
-        AppState.matchDurationSecs = court.active_match.duration_seconds || 0;
-        restored = true;
-      }
-    } catch (e) {}
-  }
-
-  if (!restored) {
-    initDefaultScorer(courtId);
-  }
-
-  if (AppState.currentUser && AppState.scorer && !AppState.scorer.scored_by) {
-    AppState.scorer.scored_by = {
-      name: AppState.currentUser.name,
-      email: AppState.currentUser.email,
-      role: AppState.currentUser.role
-    };
-  }
-
-  AppState.modalShown = false;
-  startMatchTimer();
-  updateScoreboardUI(true);
-  syncActiveCourt();
+  document.getElementById('header-court-select').value = courtId;
+  renderCurrentCourt();
+  updateCourtAvailability();
+  pollSharedState();
 }
 
-async function handleCourtSwitch(newCourtId) {
-  if (newCourtId === AppState.currentCourtId) return;
-
-  // Flush current court immediately before switching
-  if (AppState.scorer) {
-    const currentJson = AppState.scorer.toLightJSON();
-    currentJson.duration_seconds = AppState.matchDurationSecs;
-    localStorage.setItem(`padel_court_match_${AppState.currentCourtId}`, JSON.stringify(currentJson));
-    apiPost(`/api/courts/${AppState.currentCourtId}`, {
-      match: currentJson,
-      court_name: getCourtDisplayName(AppState.currentCourtId)
-    });
-  }
-
-  const headerSel = document.getElementById('header-court-select');
-  if (headerSel) headerSel.value = newCourtId;
-
-  await restoreOrInitCourtScorer(newCourtId, true);
-  showToast(`🏟️ Beralih ke: ${getCourtDisplayName(newCourtId)}`);
-}
-
-// ZERO-LAG DEBOUNCED COURT SYNC:
-// Saves to localStorage in <1ms, then debounces network POST by 300ms with AbortController
-function syncActiveCourt(immediate = false) {
-  if (!AppState.scorer) return;
-  if (AppState.currentUser) {
-    AppState.scorer.scored_by = {
-      name: AppState.currentUser.name,
-      email: AppState.currentUser.email,
-      role: AppState.currentUser.role
-    };
-  }
-
-  const fullMatchData = AppState.scorer.toJSON();
-  fullMatchData.duration_seconds = AppState.matchDurationSecs;
-
-  // 1. Instant synchronous localStorage save (0ms network wait)
+async function runCourtRequest(courtId, action, body) {
+  if (AppState.pendingCourtAction) return null;
+  AppState.pendingCourtAction = true;
+  updateCourtAvailability();
+  setSyncIndicator('syncing');
   try {
-    localStorage.setItem(`padel_court_match_${AppState.currentCourtId}`, JSON.stringify(fullMatchData));
-  } catch (e) {}
-
-  // 2. Debounced lightweight network broadcast
-  if (AppState.courtSyncTimer) {
-    clearTimeout(AppState.courtSyncTimer);
-  }
-
-  const doNetworkSync = async () => {
-    if (!AppState.scorer) return;
-    if (AppState.courtSyncAbortCtrl) {
-      try {
-        AppState.courtSyncAbortCtrl.abort();
-      } catch (e) {}
+    const response = await apiPost(`/api/courts/${courtId}/${action}`, body);
+    if (response?.court && response.commitRevision >= AppState.courtRevision) {
+      AppState.courtAcknowledgements.set(courtId, { revision: response.commitRevision, court: response.court });
+      AppState.courts = AppState.courts.map(court => court.id === courtId ? response.court : court);
+      renderCourtViews();
     }
-    AppState.courtSyncAbortCtrl = new AbortController();
-    const lightPayload = AppState.scorer.toLightJSON();
-    lightPayload.duration_seconds = AppState.matchDurationSecs;
-
-    setSyncIndicator('syncing');
-    const res = await apiPost(
-      `/api/courts/${AppState.currentCourtId}`,
-      {
-        match: lightPayload,
-        court_name: getCourtDisplayName(AppState.currentCourtId)
-      },
-      AppState.courtSyncAbortCtrl.signal
-    );
-    setSyncIndicator(res ? 'online' : 'offline');
-  };
-
-  if (immediate) {
-    doNetworkSync();
-  } else {
-    AppState.courtSyncTimer = setTimeout(doNetworkSync, 300);
+    if (!response || response.error) {
+      setSyncIndicator(response && response.httpStatus < 500 ? 'online' : 'offline');
+      showToast(response?.error || 'Koneksi terputus. Periksa skor terbaru sebelum mencoba lagi.');
+      return null;
+    }
+    setSyncIndicator('online');
+    return response;
+  } finally {
+    AppState.pendingCourtAction = false;
+    updateCourtAvailability();
+    pollSharedState();
   }
 }
 
-// Multi-Court Live Monitor Modal
 function openMultiCourtMonitorModal() {
-  const modal = document.getElementById('modal-multi-court');
-  if (!modal) return;
-  modal.classList.remove('hidden');
+  document.getElementById('modal-multi-court').classList.remove('hidden');
   renderMultiCourtGrid();
-
-  if (AppState.multiCourtPollingInterval) clearInterval(AppState.multiCourtPollingInterval);
-  AppState.multiCourtPollingInterval = setInterval(renderMultiCourtGrid, 2500);
+  pollSharedState();
 }
 
 function closeMultiCourtMonitorModal() {
-  const modal = document.getElementById('modal-multi-court');
-  if (modal) modal.classList.add('hidden');
-  if (AppState.multiCourtPollingInterval) {
-    clearInterval(AppState.multiCourtPollingInterval);
-    AppState.multiCourtPollingInterval = null;
-  }
+  document.getElementById('modal-multi-court').classList.add('hidden');
 }
 
 function buildCourtMonitorCardHTML(c, isAdminView = false) {
@@ -1026,8 +741,8 @@ function buildCourtMonitorCardHTML(c, isAdminView = false) {
     matchBody = `
       <div class="space-y-2.5">
         <div class="flex items-center justify-between text-[11px] text-slate-400">
-          <span class="font-bold uppercase text-emerald-400">${(m.sport || 'Padel').toUpperCase()} • ${isDoubles ? 'Ganda 2v2' : 'Tunggal 1v1'}</span>
-          <span class="font-mono text-slate-300">${m.rules?.golden_point ? '⭐ Golden Pt' : '🎾 Deuce'} • Target ${m.rules?.games_per_set || 6}G</span>
+          <span class="font-bold uppercase text-emerald-400">${escapeHTML((m.sport || 'Padel').toUpperCase())} • ${isDoubles ? 'Ganda 2v2' : 'Tunggal 1v1'}</span>
+          <span class="font-mono text-slate-300">${m.rules?.golden_point ? '⭐ Golden Pt' : '🎾 Deuce'} • Target ${escapeHTML(m.rules?.games_per_set || 6)}G</span>
         </div>
 
         <div class="p-3 bg-slate-950/90 rounded-2xl border border-slate-800 space-y-2">
@@ -1045,12 +760,12 @@ function buildCourtMonitorCardHTML(c, isAdminView = false) {
           <div class="flex items-center justify-between">
             <div class="flex items-center space-x-2 truncate pr-2">
               <span class="text-xs font-bold ${m.server === 'team_a' ? 'text-emerald-400' : 'text-slate-600'}">${m.server === 'team_a' ? '🎾' : '•'}</span>
-              <span class="text-sm font-bold text-white truncate">${m.team_a_name || 'Tim A'}</span>
+              <span class="text-sm font-bold text-white truncate">${escapeHTML(m.team_a_name || 'Tim A')}</span>
             </div>
             <div class="flex items-center space-x-3 font-mono font-bold text-sm">
-              <span class="text-amber-400 font-extrabold w-4 text-center">${setsWonA}</span>
-              <span class="text-white w-4 text-center">${gamesA}</span>
-              <span class="text-emerald-400 bg-slate-800 px-2 py-0.5 rounded min-w-[32px] text-center">${ptA}</span>
+              <span class="text-amber-400 font-extrabold w-4 text-center">${escapeHTML(setsWonA)}</span>
+              <span class="text-white w-4 text-center">${escapeHTML(gamesA)}</span>
+              <span class="text-emerald-400 bg-slate-800 px-2 py-0.5 rounded min-w-[32px] text-center">${escapeHTML(ptA)}</span>
             </div>
           </div>
 
@@ -1058,23 +773,23 @@ function buildCourtMonitorCardHTML(c, isAdminView = false) {
           <div class="flex items-center justify-between">
             <div class="flex items-center space-x-2 truncate pr-2">
               <span class="text-xs font-bold ${m.server === 'team_b' ? 'text-amber-400' : 'text-slate-600'}">${m.server === 'team_b' ? '🎾' : '•'}</span>
-              <span class="text-sm font-bold text-white truncate">${m.team_b_name || 'Tim B'}</span>
+              <span class="text-sm font-bold text-white truncate">${escapeHTML(m.team_b_name || 'Tim B')}</span>
             </div>
             <div class="flex items-center space-x-3 font-mono font-bold text-sm">
-              <span class="text-amber-400 font-extrabold w-4 text-center">${setsWonB}</span>
-              <span class="text-white w-4 text-center">${gamesB}</span>
-              <span class="text-emerald-400 bg-slate-800 px-2 py-0.5 rounded min-w-[32px] text-center">${ptB}</span>
+              <span class="text-amber-400 font-extrabold w-4 text-center">${escapeHTML(setsWonB)}</span>
+              <span class="text-white w-4 text-center">${escapeHTML(gamesB)}</span>
+              <span class="text-emerald-400 bg-slate-800 px-2 py-0.5 rounded min-w-[32px] text-center">${escapeHTML(ptB)}</span>
             </div>
           </div>
         </div>
 
         <div class="flex items-center justify-between text-[11px] text-slate-400">
-          <span>👤 Pencatat: <strong class="text-slate-200">${refName}</strong></span>
+          <span>👤 Pencatat: <strong class="text-slate-200">${escapeHTML(refName)}</strong></span>
           <span>🕒 ${c.last_updated ? c.last_updated.substring(11, 19) : 'Baru saja'}</span>
         </div>
 
-        ${setsStr ? `<div class="text-[11px] text-slate-400 font-mono">Riwayat Set: <span class="text-emerald-300 font-bold">${setsStr}</span></div>` : ''}
-        ${m.win_reason ? `<div class="text-xs font-bold text-red-300 bg-red-950/60 p-2 rounded-xl border border-red-500/30">🏆 ${m.win_reason}</div>` : ''}
+        ${setsStr ? `<div class="text-[11px] text-slate-400 font-mono">Riwayat Set: <span class="text-emerald-300 font-bold">${escapeHTML(setsStr)}</span></div>` : ''}
+        ${m.win_reason ? `<div class="text-xs font-bold text-red-300 bg-red-950/60 p-2 rounded-xl border border-red-500/30">🏆 ${escapeHTML(m.win_reason)}</div>` : ''}
       </div>
     `;
   } else {
@@ -1104,11 +819,11 @@ function buildCourtMonitorCardHTML(c, isAdminView = false) {
       </div>
 
       <div class="pt-3 border-t border-slate-800/80 mt-3 flex flex-wrap items-center gap-1.5">
-        <button onclick="switchToCourtAndOpenScorer('${c.id}')" class="flex-1 py-2 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/40 font-bold rounded-xl text-xs transition">
+        <button onclick="switchToCourtAndOpenScorer(${htmlArgument(c.id)})" class="flex-1 py-2 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/40 font-bold rounded-xl text-xs transition">
           🎯 ${isCurrent ? 'Buka Papan Skor' : 'Kendalikan Lapangan Ini'}
         </button>
         ${isAdminView && m ? `
-          <button onclick="handleAdminClearCourt('${c.id}')" title="Kosongkan / Reset sesi lapangan ini" class="px-2.5 py-2 bg-red-600/20 hover:bg-red-600 text-red-300 hover:text-white border border-red-500/30 font-bold rounded-xl text-xs transition">
+          <button onclick="handleAdminClearCourt(${htmlArgument(c.id)})" title="Kosongkan / Reset sesi lapangan ini" class="px-2.5 py-2 bg-red-600/20 hover:bg-red-600 text-red-300 hover:text-white border border-red-500/30 font-bold rounded-xl text-xs transition">
             🧹 Reset
           </button>
         ` : ''}
@@ -1117,79 +832,38 @@ function buildCourtMonitorCardHTML(c, isAdminView = false) {
   `;
 }
 
-async function renderMultiCourtGrid() {
-  const container = document.getElementById('multi-court-grid');
-  if (!container) return;
-
-  const courts = (await apiGet('/api/courts')) || AppState.courts || [];
-  AppState.courts = courts;
-  const defaultIds = ['court_1', 'court_2', 'court_3'];
-  const allIds = Array.from(new Set([...defaultIds, ...courts.map(c => c.id)]));
-
-  const fullCourts = allIds.map(cid => {
-    const existing = courts.find(c => c.id === cid);
-    return existing || { id: cid, name: getCourtDisplayName(cid), active_match: null };
-  });
-
-  container.innerHTML = fullCourts.map(c => buildCourtMonitorCardHTML(c, false)).join('');
+function renderMultiCourtGrid() {
+  document.getElementById('multi-court-grid').innerHTML = AppState.courts
+    .map(court => buildCourtMonitorCardHTML(court)).join('');
 }
 
-async function switchToCourtAndOpenScorer(courtId) {
+function switchToCourtAndOpenScorer(courtId) {
   closeMultiCourtMonitorModal();
-  await handleCourtSwitch(courtId);
+  handleCourtSwitch(courtId);
   switchTab('scorer');
 }
 
-// ============================================================================
-// 6. DEFAULT SCORER & HIGH-SPEED SCOREBOARD UI (DIRTY-CHECKED DOM)
-// ============================================================================
-function initDefaultScorer(courtId = 'court_1') {
-  const p1 = AppState.players[0] || { id: 'p1', name: 'Budi Santoso', photo_url: '' };
-  const p2 = AppState.players[3] || { id: 'p4', name: 'Dimas Anggara', photo_url: '' };
-  const p3 = AppState.players[1] || { id: 'p2', name: 'Rizky Pratama', photo_url: '' };
-  const p4 = AppState.players[2] || { id: 'p3', name: 'Aditya Wijaya', photo_url: '' };
-
-  AppState.scorer = new MatchScorer({
-    sport: 'padel',
-    mode: 'doubles',
-    court_id: courtId,
-    scored_by: AppState.currentUser ? {
-      name: AppState.currentUser.name,
-      email: AppState.currentUser.email,
-      role: AppState.currentUser.role
-    } : null,
-    team_a_name: `${p1.name.split(' ')[0]} & ${p2.name.split(' ')[0]}`,
-    team_b_name: `${p3.name.split(' ')[0]} & ${p4.name.split(' ')[0]}`,
-    team_a_players: [p1, p2],
-    team_b_players: [p3, p4],
-    team_a_photo: p1.photo_url || '',
-    team_b_photo: p3.photo_url || '',
-    rules: {
-      sets_to_win: 2,
-      games_per_set: 6,
-      golden_point: false,
-      tiebreak_at: 6,
-      tiebreak_points: 7
-    }
-  });
-
-  AppState.matchDurationSecs = 0;
-  startMatchTimer();
-  updateScoreboardUI(true);
+function renderMatchTimer() {
+  const scorer = AppState.scorer;
+  if (!scorer) return;
+  const end = scorer.end_time || new Date();
+  AppState.matchDurationSecs = Math.max(0, Math.floor((end - scorer.start_time) / 1000));
+  const mins = Math.floor(AppState.matchDurationSecs / 60);
+  const secs = AppState.matchDurationSecs % 60;
+  document.getElementById('match-timer').textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 }
 
 function startMatchTimer() {
-  if (AppState.matchTimerInterval) clearInterval(AppState.matchTimerInterval);
-  AppState.matchTimerInterval = setInterval(() => {
-    if (AppState.scorer && !AppState.scorer.is_completed) {
-      AppState.matchDurationSecs++;
-      AppState.scorer.duration_seconds = AppState.matchDurationSecs;
-      const mins = Math.floor(AppState.matchDurationSecs / 60);
-      const secs = AppState.matchDurationSecs % 60;
-      const el = document.getElementById('match-timer');
-      if (el) el.textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-    }
-  }, 1000);
+  setInterval(renderMatchTimer, 1000);
+}
+
+function escapeHTML(value) {
+  const entities = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+  return String(value ?? '').replace(/[&<>"']/g, character => entities[character]);
+}
+
+function htmlArgument(value) {
+  return escapeHTML(JSON.stringify(value));
 }
 
 // Resolve player photo from AppState.players by id/name if stripped in light JSON
@@ -1210,8 +884,17 @@ function triggerDigitPop(el) {
 
 function updateScoreboardUI(forceHeaderRebuild = false) {
   const s = AppState.scorer;
+  document.getElementById('active-scoreboard').classList.toggle('hidden', !s);
+  document.getElementById('empty-court').classList.toggle('hidden', Boolean(s));
+  document.getElementById('empty-court-title').textContent = getCourtDisplayName(AppState.currentCourtId);
+  document.getElementById('empty-court-description').textContent = AppState.courtRevision < 0
+    ? 'Menghubungkan ke database bersama…'
+    : 'Lapangan kosong. Buat pertandingan untuk mulai mencatat skor.';
   if (!s) return;
 
+  document.getElementById('pending-result-label').classList.toggle('hidden', !s.is_completed);
+  document.getElementById('btn-add-point-a').disabled = s.is_completed;
+  document.getElementById('btn-add-point-b').disabled = s.is_completed;
   const isDoubles = s.mode === 'doubles';
 
   // Active Court Badge
@@ -1361,7 +1044,7 @@ function updateScoreboardUI(forceHeaderRebuild = false) {
     historyContainer.innerHTML = s.sets_history.map((set, idx) => `
       <div class="px-2.5 py-1 bg-slate-800 border border-slate-700 rounded-lg text-xs font-mono font-bold flex items-center space-x-1 whitespace-nowrap">
         <span class="text-slate-400">Set ${idx + 1}:</span>
-        <span class="text-emerald-400">${set.team_a}</span><span>-</span><span class="text-amber-400">${set.team_b}</span>
+        <span class="text-emerald-400">${escapeHTML(set.team_a)}</span><span>-</span><span class="text-amber-400">${escapeHTML(set.team_b)}</span>
       </div>
     `).join('');
   }
@@ -1380,13 +1063,11 @@ function updateScoreboardUI(forceHeaderRebuild = false) {
   // Undo & Redo button states
   const undoBtn = document.getElementById('btn-undo-point');
   if (undoBtn) {
-    undoBtn.disabled = s.history.length === 0;
-    undoBtn.style.opacity = s.history.length === 0 ? '0.4' : '1';
+    undoBtn.disabled = !s.undo_count;
   }
   const redoBtn = document.getElementById('btn-redo-point');
   if (redoBtn) {
-    redoBtn.disabled = !s.redoStack || s.redoStack.length === 0;
-    redoBtn.style.opacity = (!s.redoStack || s.redoStack.length === 0) ? '0.4' : '1';
+    redoBtn.disabled = !s.redo_count;
   }
 
   // Active server status text
@@ -1396,10 +1077,6 @@ function updateScoreboardUI(forceHeaderRebuild = false) {
     serverTextEl.textContent = `Servis: ${activePlayer.name}`;
   }
 
-  // Check if match completed
-  if (s.is_completed && !AppState.modalShown) {
-    showMatchCompletedModal();
-  }
 }
 
 function renderTeamScoreHeader(teamKey, teamObj, isServingTeam, isDoubles, activePlayerIdx, forceRebuild = false) {
@@ -1432,15 +1109,15 @@ function renderTeamScoreHeader(teamKey, teamObj, isServingTeam, isDoubles, activ
 
       avatarsWrap.innerHTML = `
         <div class="doubles-avatar-wrap">
-          <img src="${img1}" class="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl object-cover border-2 ${teamKey === 'a' ? 'border-emerald-500' : 'border-amber-500'} shadow-md">
-          <img src="${img2}" class="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl object-cover border-2 ${teamKey === 'a' ? 'border-emerald-400' : 'border-amber-400'} shadow-md">
+          <img src="${escapeHTML(img1)}" class="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl object-cover border-2 ${teamKey === 'a' ? 'border-emerald-500' : 'border-amber-500'} shadow-md">
+          <img src="${escapeHTML(img2)}" class="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl object-cover border-2 ${teamKey === 'a' ? 'border-emerald-400' : 'border-amber-400'} shadow-md">
         </div>
       `;
     } else {
       const p = (teamObj.players && teamObj.players[0]) || { name: teamObj.name, photo_url: teamObj.photo };
       const img = resolvePlayerPhoto(p, teamObj.name);
       avatarsWrap.innerHTML = `
-        <img src="${img}" class="w-12 h-12 sm:w-15 sm:h-15 rounded-2xl object-cover border-2 ${teamKey === 'a' ? 'border-emerald-500/50' : 'border-amber-500/50'} shadow-md">
+        <img src="${escapeHTML(img)}" class="w-12 h-12 sm:w-15 sm:h-15 rounded-2xl object-cover border-2 ${teamKey === 'a' ? 'border-emerald-500/50' : 'border-amber-500/50'} shadow-md">
       `;
     }
   }
@@ -1453,7 +1130,7 @@ function renderTeamScoreHeader(teamKey, teamObj, isServingTeam, isDoubles, activ
         return `
           <button onclick="handleSelectDoublesServer('team_${teamKey}', ${idx})" title="Klik untuk jadikan server" class="px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition ${isThisServing ? 'bg-emerald-600 text-white font-bold border border-emerald-400 shadow-sm' : 'bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700'}">
             <span>${isThisServing ? '🎾' : '👤'}</span>
-            <span class="truncate max-w-[110px]">${player.name || `Pemain ${idx + 1}`}</span>
+            <span class="truncate max-w-[110px]">${escapeHTML(player.name || `Pemain ${idx + 1}`)}</span>
             ${isThisServing ? '<span class="text-[9px] bg-emerald-950 px-1 py-0.2 rounded font-black text-emerald-300">SERVIS</span>' : ''}
           </button>
         `;
@@ -1467,75 +1144,44 @@ function renderTeamScoreHeader(teamKey, teamObj, isServingTeam, isDoubles, activ
 // ============================================================================
 // 7. SCORER ACTIONS (INSTANT 0ms UI)
 // ============================================================================
-function handlePoint(team) {
-  if (!AppState.scorer) return;
-  AppState.scorer.addPoint(team);
-  updateScoreboardUI(false);
-  syncActiveCourt(false);
-}
-
-function handleUndo() {
-  if (!AppState.scorer) return;
-  if (AppState.scorer.undo()) {
-    AppState.modalShown = false;
-    updateScoreboardUI(false);
-    syncActiveCourt(false);
-    showToast('↩ Undo poin berhasil');
+async function runScoreAction(action) {
+  const scorer = AppState.scorer;
+  if (!scorer || AppState.pendingCourtAction) return;
+  const response = await runCourtRequest(scorer.court_id, 'score', {
+    match_id: scorer.id, version: scorer.version, action
+  });
+  const latest = AppState.scorer;
+  if (!response || latest?.id !== scorer.id) return;
+  if (action.type === 'point') {
+    window.soundEngine.playPointBeep();
+    if (!latest.is_completed) {
+      if (latest.getSetsWon(action.team) > scorer.getSetsWon(action.team)) {
+        window.soundEngine.announceSet(latest[action.team].name, latest.sets_history.length,
+          latest.getSetsWon('team_a'), latest.getSetsWon('team_b'));
+      } else if (latest.current_set_games[action.team] > scorer.current_set_games[action.team]) {
+        window.soundEngine.announceGame(latest[action.team].name, latest.current_set_games.team_a, latest.current_set_games.team_b);
+      } else latest.announceCurrentScore();
+      if (latest.side_switch_alert && !scorer.side_switch_alert) window.soundEngine.announceSideSwitch();
+    }
+  }
+  if (action.type === 'undo') window.soundEngine.playUndoBeep();
+  if (latest.is_completed && !scorer.is_completed) {
+    window.soundEngine.announceMatch(latest[latest.winner].name);
+    if (AppState.currentTab === 'scorer') showMatchCompletedModal();
   }
 }
 
-function handleRedo() {
-  if (!AppState.scorer) return;
-  if (AppState.scorer.redo()) {
-    updateScoreboardUI(false);
-    syncActiveCourt(false);
-    showToast('↪ Redo poin berhasil');
-  }
-}
+function handlePoint(team) { return runScoreAction({ type: 'point', team }); }
+function handleUndo() { return runScoreAction({ type: 'undo' }); }
+function handleRedo() { return runScoreAction({ type: 'redo' }); }
+function handleToggleServer() { return runScoreAction({ type: 'server' }); }
+function handleSelectDoublesServer(team, player) { return runScoreAction({ type: 'doubles_server', team, player }); }
+function handleToggleGoldenPoint() { return runScoreAction({ type: 'golden_point' }); }
 
 function handleResetCurrentMatch() {
-  if (!AppState.scorer) return;
-  if (!confirm('Reset skor pertandingan ini kembali ke 0 - 0?')) return;
-  AppState.scorer.resetMatch();
-  AppState.matchDurationSecs = 0;
-  AppState.modalShown = false;
-  updateScoreboardUI(true);
-  syncActiveCourt(true);
-  showToast('🔄 Skor pertandingan di-reset ke 0 - 0');
-}
-
-function handleToggleServer() {
-  if (!AppState.scorer) return;
-  AppState.scorer.toggleServer();
-  updateScoreboardUI(false);
-  syncActiveCourt(false);
-  const activePlayer = AppState.scorer.getActiveServerPlayer();
-  showToast(`🎾 Giliran Servis: ${activePlayer.name}`);
-}
-
-function handleSelectDoublesServer(teamKey, playerIdx) {
-  if (!AppState.scorer || AppState.scorer.mode !== 'doubles') return;
-  AppState.scorer.setDoublesServer(teamKey, playerIdx);
-  updateScoreboardUI(false);
-  syncActiveCourt(false);
-  const activePlayer = AppState.scorer.getActiveServerPlayer();
-  showToast(`🎾 Server ditetapkan: ${activePlayer.name}`);
-}
-
-function handleQuickDeuce() {
-  if (!AppState.scorer) return;
-  AppState.scorer.setDeuce();
-  updateScoreboardUI(false);
-  syncActiveCourt(false);
-  showToast('⚡ Skor diatur ke DEUCE (40 - 40)!');
-}
-
-function handleToggleGoldenPoint() {
-  if (!AppState.scorer) return;
-  const isGold = AppState.scorer.toggleGoldenPoint();
-  updateScoreboardUI(false);
-  syncActiveCourt(false);
-  showToast(isGold ? '⭐ Mode Golden Point (No-Ad) Diaktifkan' : '🎾 Mode Deuce & Advantage Standar Diaktifkan');
+  if (AppState.scorer && confirm('Reset skor pertandingan ini kembali ke 0 - 0?')) {
+    return runScoreAction({ type: 'reset' });
+  }
 }
 
 function openQuickTargetGamesModal() {
@@ -1549,11 +1195,8 @@ function applyQuickTargetGames(num) {
     return;
   }
   if (!AppState.scorer) return;
-  AppState.scorer.setTargetGames(val);
   document.getElementById('quick-target-games-modal').classList.add('hidden');
-  updateScoreboardUI(false);
-  syncActiveCourt(false);
-  showToast(`🎯 Target set diubah menjadi ${val} Game!`);
+  return runScoreAction({ type: 'target', games: val });
 }
 
 function handleDismissSideSwitch() {
@@ -1589,38 +1232,31 @@ function confirmWalkoverWin() {
   const reasonType = document.getElementById('wo-reason-select').value;
   const customNote = document.getElementById('wo-custom-note').value.trim();
 
-  AppState.scorer.winByDefault(winnerTeam, reasonType, customNote);
-
   document.getElementById('modal-walkover-win').classList.add('hidden');
-  syncActiveCourt(true);
-  updateScoreboardUI(false);
+  return runScoreAction({ type: 'walkover', team: winnerTeam, reason: reasonType, note: customNote });
 }
 
 // Match Completion Modal & Victory Slogan
+function closeFinishModal() {
+  AppState.finishContext = null;
+  document.getElementById('match-finish-modal').classList.add('hidden');
+}
+
 function showMatchCompletedModal() {
-  AppState.modalShown = true;
   const s = AppState.scorer;
-  if (!s) return;
-
-  // If user clicked "Selesaikan Match Sekarang" before a winner was decided, determine leading team
-  if (!s.winner) {
-    const setsA = s.getSetsWon('team_a');
-    const setsB = s.getSetsWon('team_b');
-    if (setsA > setsB) s.winner = 'team_a';
-    else if (setsB > setsA) s.winner = 'team_b';
-    else if (s.current_set_games.team_a > s.current_set_games.team_b) s.winner = 'team_a';
-    else if (s.current_set_games.team_b > s.current_set_games.team_a) s.winner = 'team_b';
-    else s.winner = (s.stats?.total_points_a || 0) >= (s.stats?.total_points_b || 0) ? 'team_a' : 'team_b';
-
-    if (s.current_set_games.team_a > 0 || s.current_set_games.team_b > 0 || s.sets_history.length === 0) {
-      s.sets_history.push({
-        team_a: s.current_set_games.team_a,
-        team_b: s.current_set_games.team_b,
-        winner: s.winner
-      });
-      s.current_set_games = { team_a: 0, team_b: 0 };
-    }
-    s.is_completed = true;
+  if (!s || AppState.pendingCourtAction) return;
+  AppState.finishContext = { courtId: s.court_id, match_id: s.id, version: s.version };
+  const modal = document.getElementById('match-finish-modal');
+  const manual = !s.is_completed;
+  document.getElementById('finish-title').textContent = manual ? 'Selesaikan Pertandingan' : 'Konfirmasi Hasil Pertandingan';
+  document.getElementById('finish-manual').classList.toggle('hidden', !manual);
+  document.getElementById('finish-celebration').classList.toggle('hidden', manual);
+  if (manual) {
+    const winner = document.getElementById('finish-winner-select');
+    winner.replaceChildren(new Option('Pilih pemenang', ''), new Option(s.team_a.name, 'team_a'),
+      new Option(s.team_b.name, 'team_b'));
+    modal.classList.remove('hidden');
+    return;
   }
 
   const winnerTeam = s.winner === 'team_a' ? s.team_a : s.team_b;
@@ -1629,9 +1265,6 @@ function showMatchCompletedModal() {
   if (window.confetti) {
     window.confetti({ particleCount: 130, spread: 80, origin: { y: 0.6 } });
   }
-
-  const modal = document.getElementById('match-finish-modal');
-  if (!modal) return;
 
   document.getElementById('finish-winner-name').textContent = winnerName;
 
@@ -1644,15 +1277,15 @@ function showMatchCompletedModal() {
       const img2 = resolvePlayerPhoto(p2, 'W2');
       avatarsWrap.innerHTML = `
         <div class="doubles-avatar-wrap">
-          <img src="${img1}" class="w-20 h-20 rounded-3xl object-cover border-4 border-amber-400 shadow-xl">
-          <img src="${img2}" class="w-20 h-20 rounded-3xl object-cover border-4 border-amber-300 shadow-xl">
+          <img src="${escapeHTML(img1)}" class="w-20 h-20 rounded-3xl object-cover border-4 border-amber-400 shadow-xl">
+          <img src="${escapeHTML(img2)}" class="w-20 h-20 rounded-3xl object-cover border-4 border-amber-300 shadow-xl">
         </div>
       `;
     } else {
       const p = (winnerTeam.players && winnerTeam.players[0]) || { name: winnerName, photo_url: winnerTeam.photo };
       const img = resolvePlayerPhoto(p, winnerName);
       avatarsWrap.innerHTML = `
-        <img src="${img}" class="w-24 h-24 rounded-3xl object-cover border-4 border-amber-400 shadow-xl">
+        <img src="${escapeHTML(img)}" class="w-24 h-24 rounded-3xl object-cover border-4 border-amber-400 shadow-xl">
       `;
     }
   }
@@ -1667,7 +1300,7 @@ function showMatchCompletedModal() {
     }
   }
 
-  const scoreSummary = s.sets_history.map(set => `${set.team_a}-${set.team_b}`).join(' | ');
+  const scoreSummary = s.sets_history.map(set => `${escapeHTML(set.team_a)}-${escapeHTML(set.team_b)}`).join(' | ');
   document.getElementById('finish-score-summary').textContent = `Skor Akhir: ${scoreSummary || 'Game Selesai'}`;
   document.getElementById('finish-duration').textContent = `Durasi: ${Math.max(1, Math.floor(AppState.matchDurationSecs / 60))} Menit • Total Poin: ${(s.stats?.total_points_a || 0) + (s.stats?.total_points_b || 0)}`;
 
@@ -1709,56 +1342,35 @@ function replayVictorySlogan() {
 }
 
 async function saveAndFinishMatch() {
-  const s = AppState.scorer;
-  if (!s) return;
-
-  s.is_completed = true;
-  const matchData = s.toLightJSON();
-  matchData.status = 'completed';
-  matchData.duration_minutes = Math.max(1, Math.round(AppState.matchDurationSecs / 60));
-
-  showToast('💾 Menyimpan hasil pertandingan...');
-  const res = await apiPost('/api/matches', matchData);
-
-  if (s.tournament_id && s.tournament_match_id) {
-    const tourney = AppState.tournaments.find(t => t.id === s.tournament_id);
-    if (tourney) {
-      TournamentManager.recordMatchResult(tourney, s.tournament_match_id, matchData);
-      await fetch(`/api/tournaments/${tourney.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(tourney)
-      });
-      await loadTournaments();
-    }
+  const context = AppState.finishContext;
+  const scorer = AppState.scorer;
+  if (!context || !scorer) return;
+  const winner = scorer.winner || document.getElementById('finish-winner-select').value;
+  if (!winner) {
+    showToast('Pilih pemenang terlebih dahulu.');
+    return;
   }
-
-  localStorage.removeItem(`padel_court_match_${AppState.currentCourtId}`);
-  await fetch(`/api/courts/${AppState.currentCourtId}`, { method: 'DELETE' });
-
-  await Promise.all([loadMatches(), loadPlayers(), loadCourts()]);
-
-  document.getElementById('match-finish-modal').classList.add('hidden');
-  AppState.modalShown = false;
-
-  let msg = '✅ Pertandingan berhasil disimpan!';
-  if (res && res.sheet_synced) {
-    msg += ' Tersinkron ke Google Sheet! 📊';
-  }
-  showToast(msg);
-
-  // Re-initialize fresh match on this court so it's ready for next match
-  initDefaultScorer(AppState.currentCourtId);
-  switchTab(AppState.currentUser?.role === 'admin' ? 'admin' : 'history');
+  const response = await runCourtRequest(context.courtId, 'finish', {
+    match_id: context.match_id, version: context.version, winner
+  });
+  if (!response) return;
+  closeFinishModal();
+  await fetchBootstrapData();
+  showToast('✅ Hasil disimpan. Lapangan siap untuk pertandingan berikutnya.');
 }
 
 // ============================================================================
 // 8. NEW MATCH SETUP MODAL (SINGLES 1v1 & DOUBLES 2v2)
 // ============================================================================
 function startNewMatchPrompt() {
+  if (AppState.courtRevision < 0 || AppState.pendingCourtAction || AppState.courts.find(court => court.id === AppState.currentCourtId)?.active_match) {
+    showToast('Pilih lapangan kosong yang terhubung ke server.');
+    return;
+  }
   populateCourtDropdowns();
   populateNewMatchPlayerDropdowns();
   const modeSel = document.getElementById('new-match-mode');
+  for (const id of ['new-match-name-a-single', 'new-match-name-b-single']) document.getElementById(id).value = '';
   toggleMatchModeInputs(modeSel ? modeSel.value : 'doubles');
   document.getElementById('new-match-modal').classList.remove('hidden');
 }
@@ -1771,16 +1383,12 @@ function populateNewMatchPlayerDropdowns() {
   ];
 
   const optionsHtml = '<option value="">-- Pilih dari Daftar Pemain --</option>' +
-    (AppState.players || []).map(p => `<option value="${p.id}">${p.name} (${p.level || p.skill_level || 'Intermediate'})</option>`).join('');
+    (AppState.players || []).map(p => `<option value="${escapeHTML(p.id)}">${escapeHTML(p.name)} (${escapeHTML(p.level || p.skill_level || 'Intermediate')})</option>`).join('');
 
-  selectIds.forEach((id, idx) => {
+  selectIds.forEach(id => {
     const el = document.getElementById(id);
     if (el) {
       el.innerHTML = optionsHtml;
-      if (AppState.players && AppState.players.length > 0) {
-        const pick = AppState.players[idx % AppState.players.length];
-        if (pick) el.value = pick.id;
-      }
     }
   });
 
@@ -1825,9 +1433,7 @@ function autoGenerateDoublesTeamName(teamKey) {
   const p1 = (AppState.players || []).find(x => x.id === sel1.value);
   const p2 = (AppState.players || []).find(x => x.id === sel2.value);
 
-  const n1 = p1 ? p1.name.split(' ')[0] : 'Pemain 1';
-  const n2 = p2 ? p2.name.split(' ')[0] : 'Pemain 2';
-  teamNameInput.value = `${n1} & ${n2}`;
+  teamNameInput.value = p1 && p2 ? `${p1.name} & ${p2.name}` : '';
 }
 
 function handleGameSelectChange(selectElOrVal, wrapId = 'new-match-custom-game-wrap') {
@@ -1839,14 +1445,8 @@ function handleGameSelectChange(selectElOrVal, wrapId = 'new-match-custom-game-w
 async function startMatchFromForm(e) {
   if (e) e.preventDefault();
 
-  const selectedCourt = document.getElementById('new-match-court-select')?.value || AppState.currentCourtId;
-  if (selectedCourt && selectedCourt !== AppState.currentCourtId) {
-    AppState.currentCourtId = selectedCourt;
-    localStorage.setItem('padel_active_court_id', selectedCourt);
-    const headerSel = document.getElementById('header-court-select');
-    if (headerSel) headerSel.value = selectedCourt;
-  }
-
+  const selectedCourt = document.getElementById('new-match-court-select').value;
+  if (!selectedCourt) return;
   const sport = document.getElementById('new-match-sport')?.value || 'padel';
   const mode = document.getElementById('new-match-mode')?.value || 'doubles';
   const setsToWin = parseInt(document.getElementById('new-match-sets')?.value) || 2;
@@ -1865,8 +1465,6 @@ async function startMatchFromForm(e) {
   let teamBName = 'Tim B';
   let teamAPlayers = [];
   let teamBPlayers = [];
-  let teamAPhoto = '';
-  let teamBPhoto = '';
 
   if (mode === 'singles') {
     const pAId = document.getElementById('match-player-a-single')?.value;
@@ -1874,13 +1472,11 @@ async function startMatchFromForm(e) {
     const pA = (AppState.players || []).find(x => x.id === pAId);
     const pB = (AppState.players || []).find(x => x.id === pBId);
 
-    teamAName = document.getElementById('new-match-name-a-single')?.value.trim() || (pA ? pA.name : 'Pemain A');
-    teamBName = document.getElementById('new-match-name-b-single')?.value.trim() || (pB ? pB.name : 'Pemain B');
+    teamAName = document.getElementById('new-match-name-a-single').value.trim() || pA?.name;
+    teamBName = document.getElementById('new-match-name-b-single').value.trim() || pB?.name;
 
     teamAPlayers = [pA || { id: '', name: teamAName, photo_url: '' }];
     teamBPlayers = [pB || { id: '', name: teamBName, photo_url: '' }];
-    teamAPhoto = pA ? pA.photo_url : '';
-    teamBPhoto = pB ? pB.photo_url : '';
   } else {
     const pA1 = (AppState.players || []).find(x => x.id === document.getElementById('match-doubles-a1')?.value);
     const pA2 = (AppState.players || []).find(x => x.id === document.getElementById('match-doubles-a2')?.value);
@@ -1895,73 +1491,57 @@ async function startMatchFromForm(e) {
     teamAPlayers = [pA1Obj, pA2Obj];
     teamBPlayers = [pB1Obj, pB2Obj];
 
-    teamAName = document.getElementById('new-match-team-name-a')?.value.trim() || `${pA1Obj.name.split(' ')[0]} & ${pA2Obj.name.split(' ')[0]}`;
-    teamBName = document.getElementById('new-match-team-name-b')?.value.trim() || `${pB1Obj.name.split(' ')[0]} & ${pB2Obj.name.split(' ')[0]}`;
-    teamAPhoto = pA1Obj.photo_url || '';
-    teamBPhoto = pB1Obj.photo_url || '';
+    teamAName = document.getElementById('new-match-team-name-a')?.value.trim() || (pA1 && pA2 && `${pA1.name} & ${pA2.name}`);
+    teamBName = document.getElementById('new-match-team-name-b')?.value.trim() || (pB1 && pB2 && `${pB1.name} & ${pB2.name}`);
   }
 
-  AppState.scorer = new MatchScorer({
-    sport,
-    mode,
-    court_id: AppState.currentCourtId,
-    scored_by: AppState.currentUser ? {
-      name: AppState.currentUser.name,
-      email: AppState.currentUser.email,
-      role: AppState.currentUser.role
-    } : null,
-    team_a_name: teamAName,
-    team_b_name: teamBName,
-    team_a_players: teamAPlayers,
-    team_b_players: teamBPlayers,
-    team_a_photo: teamAPhoto,
-    team_b_photo: teamBPhoto,
+  const names = [...teamAPlayers, ...teamBPlayers].map(player => player.id).filter(Boolean);
+  if (new Set(names).size !== names.length) {
+    showToast('Pemain yang sama hanya bisa dipilih sekali.');
+    return;
+  }
+  if (!teamAName || !teamBName || teamAName.toLowerCase() === teamBName.toLowerCase()) {
+    showToast('Pilih pemain atau isi dua nama tim yang berbeda.');
+    return;
+  }
+
+  const response = await startSharedMatch(selectedCourt, {
+    sport, mode,
+    team_a_name: teamAName, team_b_name: teamBName,
+    team_a_players: teamAPlayers, team_b_players: teamBPlayers,
     rules: {
-      sets_to_win: setsToWin,
-      games_per_set: gamesPerSet,
-      golden_point: goldenPoint,
-      tiebreak_at: gamesPerSet,
-      tiebreak_points: 7
+      sets_to_win: setsToWin, games_per_set: gamesPerSet, golden_point: goldenPoint,
+      tiebreak_at: gamesPerSet, tiebreak_points: 7
     }
   });
+  if (response) document.getElementById('new-match-modal').classList.add('hidden');
+}
 
-  AppState.matchDurationSecs = 0;
-  AppState.modalShown = false;
-  document.getElementById('new-match-modal').classList.add('hidden');
+function matchPlayer(player) {
+  return { id: player.id, name: player.name };
+}
 
-  startMatchTimer();
-  updateScoreboardUI(true);
-  syncActiveCourt(true);
-  switchTab('scorer');
-  showToast(`🎾 Pertandingan dimulai di ${getCourtDisplayName(AppState.currentCourtId)}!`);
+async function startSharedMatch(courtId, config) {
+  const response = await runCourtRequest(courtId, 'start', {
+    ...config,
+    id: 'm_' + (globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2, 14)),
+    team_a_players: config.team_a_players.map(matchPlayer),
+    team_b_players: config.team_b_players.map(matchPlayer)
+  });
+  if (response) {
+    handleCourtSwitch(courtId);
+    switchTab('scorer');
+    showToast(`🎾 Pertandingan dimulai di ${getCourtDisplayName(courtId)}!`);
+  }
+  return response;
 }
 
 // ============================================================================
 // 9. ADMIN COMMAND CENTER (SUPERVISION, ANALYTICS, FULL AUDIT & REMOTE CONTROL)
 // ============================================================================
 async function refreshAdminDashboard(showNotification = false) {
-  if (showNotification) showToast('🔄 Memperbarui data Admin Command Center...');
-  const boot = await apiGet('/api/bootstrap');
-  if (boot) {
-    if (Array.isArray(boot.players)) AppState.players = boot.players;
-    if (Array.isArray(boot.tournaments)) AppState.tournaments = boot.tournaments;
-    if (Array.isArray(boot.matches)) AppState.matches = boot.matches;
-    if (Array.isArray(boot.courts)) AppState.courts = boot.courts;
-    if (Array.isArray(boot.users)) AppState.users = boot.users;
-    if (boot.settings) AppState.settings = boot.settings;
-    saveToLocalCache();
-  }
-  renderAdminDashboard();
-  if (showNotification) showToast('✅ Data Admin diperbarui!');
-}
-
-async function refreshAdminLiveCourtsOnly() {
-  const courts = await apiGet('/api/courts');
-  if (Array.isArray(courts)) {
-    AppState.courts = courts;
-    renderAdminKpiCards();
-    renderAdminLiveCourts();
-  }
+  const success = await fetchBootstrapData();
+  if (showNotification) showToast(success ? '✅ Data Admin diperbarui.' : 'Koneksi ke database terputus.');
 }
 
 function renderAdminDashboard() {
@@ -2070,50 +1650,15 @@ function renderAdminKpiCards() {
 }
 
 function renderAdminLiveCourts() {
-  const container = document.getElementById('admin-live-courts-grid');
-  if (!container) return;
-
-  const courts = AppState.courts || [];
-  const defaultIds = ['court_1', 'court_2', 'court_3'];
-  const allIds = Array.from(new Set([...defaultIds, ...courts.map(c => c.id)]));
-
-  const fullCourts = allIds.map(cid => {
-    const existing = courts.find(c => c.id === cid);
-    return existing || { id: cid, name: getCourtDisplayName(cid), active_match: null };
-  });
-
-  container.innerHTML = fullCourts.map(c => buildCourtMonitorCardHTML(c, true)).join('');
-}
-
-async function handleAdminAddCourt() {
-  const nextNum = Math.max(3, (AppState.courts || []).length) + 1;
-  const customName = prompt('Masukkan nama lapangan baru:', `Lapangan ${nextNum}`);
-  if (!customName) return;
-
-  const courtId = `court_${Date.now().toString().slice(-4)}`;
-  await apiPost(`/api/courts/${courtId}`, {
-    court_name: customName.trim(),
-    match: null
-  });
-
-  await loadCourts();
-  populateCourtDropdowns();
-  renderAdminLiveCourts();
-  renderAdminKpiCards();
-  showToast(`🏟️ ${customName} berhasil ditambahkan!`);
+  document.getElementById('admin-live-courts-grid').innerHTML = AppState.courts
+    .map(court => buildCourtMonitorCardHTML(court, true)).join('');
 }
 
 async function handleAdminClearCourt(courtId) {
-  if (!confirm(`Reset / Kosongkan sesi pertandingan di ${getCourtDisplayName(courtId)}?`)) return;
-  await fetch(`/api/courts/${courtId}`, { method: 'DELETE' });
-  localStorage.removeItem(`padel_court_match_${courtId}`);
-  if (AppState.currentCourtId === courtId) {
-    initDefaultScorer(courtId);
-  }
-  await loadCourts();
-  renderAdminLiveCourts();
-  renderAdminKpiCards();
-  showToast(`🧹 ${getCourtDisplayName(courtId)} berhasil di-reset!`);
+  const match = AppState.courts.find(court => court.id === courtId)?.active_match;
+  if (!match || !confirm(`Kosongkan ${getCourtDisplayName(courtId)} tanpa menyimpan hasil pertandingan ini?`)) return;
+  const response = await runCourtRequest(courtId, 'clear', { match_id: match.id, version: match.version });
+  if (response) showToast(`🧹 ${getCourtDisplayName(courtId)} dikosongkan.`);
 }
 
 function renderAdminVisualAnalytics() {
@@ -2171,10 +1716,10 @@ function renderAdminVisualAnalytics() {
         return `
           <div class="p-2.5 bg-slate-950/70 rounded-xl border border-slate-800/90 flex items-center space-x-3">
             <span class="text-base font-black w-6 text-center">${medal}</span>
-            <img src="${resolvePlayerPhoto(p, p.name)}" class="w-9 h-9 rounded-xl object-cover border border-slate-700">
+            <img src="${escapeHTML(resolvePlayerPhoto(p, p.name))}" class="w-9 h-9 rounded-xl object-cover border border-slate-700">
             <div class="flex-1 min-w-0">
               <div class="flex items-center justify-between text-xs font-bold mb-1">
-                <span class="text-white truncate">${p.name}</span>
+                <span class="text-white truncate">${escapeHTML(p.name)}</span>
                 <span class="text-emerald-400 font-mono">${p.wins}W - ${p.losses}L (${p.winRate}%)</span>
               </div>
               <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
@@ -2206,9 +1751,12 @@ function getPlayersWithDetailedStats() {
     const pNameLower = (p.name || '').trim().toLowerCase();
 
     matches.forEach(m => {
+      if (m.status !== 'completed' || !m.winner) return;
       const inTeamA = (m.team_a_players || []).some(tp => tp.id === p.id || (tp.name || '').trim().toLowerCase() === pNameLower) ||
+                      (m.team_a_player_ids || []).includes(p.id) ||
                       (m.team_a_name || '').trim().toLowerCase() === pNameLower;
       const inTeamB = (m.team_b_players || []).some(tp => tp.id === p.id || (tp.name || '').trim().toLowerCase() === pNameLower) ||
+                      (m.team_b_player_ids || []).includes(p.id) ||
                       (m.team_b_name || '').trim().toLowerCase() === pNameLower;
 
       if (!inTeamA && !inTeamB) return;
@@ -2226,16 +1774,17 @@ function getPlayersWithDetailedStats() {
       (m.sets_history || []).forEach(st => {
         const ga = parseInt(st.team_a) || 0;
         const gb = parseInt(st.team_b) || 0;
+        const setWinner = st.partial ? null : st.winner || (ga > gb ? 'team_a' : gb > ga ? 'team_b' : null);
         if (inTeamA) {
           gamesWon += ga;
           gamesLost += gb;
-          if (ga > gb) setsWon++;
-          else if (gb > ga) setsLost++;
+          if (setWinner === 'team_a') setsWon++;
+          else if (setWinner === 'team_b') setsLost++;
         } else {
           gamesWon += gb;
           gamesLost += ga;
-          if (gb > ga) setsWon++;
-          else if (ga > gb) setsLost++;
+          if (setWinner === 'team_b') setsWon++;
+          else if (setWinner === 'team_a') setsLost++;
         }
       });
     });
@@ -2255,11 +1804,11 @@ function getPlayersWithDetailedStats() {
       wins: finalWins,
       losses: finalLosses,
       winRate,
-      setsWon: setsWon || p.sets_won || 0,
-      setsLost: setsLost || p.sets_lost || 0,
-      gamesWon: gamesWon || p.games_won || 0,
-      gamesLost: gamesLost || p.games_lost || 0,
-      gameDiff: (gamesWon || p.games_won || 0) - (gamesLost || p.games_lost || 0),
+      setsWon: matchesPlayed > 0 ? setsWon : p.sets_won || 0,
+      setsLost: matchesPlayed > 0 ? setsLost : p.sets_lost || 0,
+      gamesWon: matchesPlayed > 0 ? gamesWon : p.games_won || 0,
+      gamesLost: matchesPlayed > 0 ? gamesLost : p.games_lost || 0,
+      gameDiff: matchesPlayed > 0 ? gamesWon - gamesLost : (p.games_won || 0) - (p.games_lost || 0),
       recentForm
     };
   });
@@ -2309,15 +1858,15 @@ function renderAdminPlayersTable() {
         <td class="p-3 font-mono font-bold text-slate-400">#${idx + 1}</td>
         <td class="p-3">
           <div class="flex items-center space-x-2.5">
-            <img src="${resolvePlayerPhoto(p, p.name)}" class="w-9 h-9 rounded-xl object-cover border border-slate-700">
+            <img src="${escapeHTML(resolvePlayerPhoto(p, p.name))}" class="w-9 h-9 rounded-xl object-cover border border-slate-700">
             <div>
-              <div class="font-bold text-white">${p.name}</div>
+              <div class="font-bold text-white">${escapeHTML(p.name)}</div>
               <div class="text-[10px] text-slate-400 truncate max-w-[150px]">${p.slogan_text ? `🔊 "${p.slogan_text}"` : 'Tanpa slogan'}</div>
             </div>
           </div>
         </td>
         <td class="p-3">
-          <span class="px-2 py-0.5 rounded-md bg-slate-800 border border-slate-700 text-[10px] font-bold text-emerald-400">${p.level}</span>
+          <span class="px-2 py-0.5 rounded-md bg-slate-800 border border-slate-700 text-[10px] font-bold text-emerald-400">${escapeHTML(p.level)}</span>
           <span class="text-[10px] text-slate-400 ml-1">${p.hand || 'Kanan'}</span>
         </td>
         <td class="p-3 text-center font-mono font-bold text-white">${p.matches_played}</td>
@@ -2333,8 +1882,8 @@ function renderAdminPlayersTable() {
         </td>
         <td class="p-3 text-center whitespace-nowrap">${formBadges}</td>
         <td class="p-3 text-right whitespace-nowrap">
-          <button onclick="editPlayer('${p.id}')" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[11px] font-bold mr-1">✏️</button>
-          <button onclick="deletePlayer('${p.id}')" class="px-2.5 py-1 bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white rounded-lg text-[11px] font-bold">🗑️</button>
+          <button onclick="editPlayer(${htmlArgument(p.id)})" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[11px] font-bold mr-1">✏️</button>
+          <button onclick="deletePlayer(${htmlArgument(p.id)})" class="px-2.5 py-1 bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white rounded-lg text-[11px] font-bold">🗑️</button>
         </td>
       </tr>
     `;
@@ -2381,35 +1930,35 @@ function renderAdminMatchesExplorer() {
       <div class="p-4 bg-slate-950/80 hover:bg-slate-950 rounded-2xl border border-slate-800 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 transition">
         <div class="space-y-1.5 flex-1 min-w-0">
           <div class="flex flex-wrap items-center gap-1.5 text-[11px]">
-            <span class="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded font-bold uppercase">${m.sport || 'PADEL'}</span>
+            <span class="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded font-bold uppercase">${escapeHTML(m.sport || 'PADEL')}</span>
             <span class="px-2 py-0.5 bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 rounded font-bold uppercase">${isDoubles ? '👥 2v2' : '👤 1v1'}</span>
-            <span class="px-2 py-0.5 bg-slate-800 text-slate-300 rounded font-semibold">🏟️ ${courtName}</span>
-            ${m.win_type && m.win_type !== 'normal' ? `<span class="px-2 py-0.5 bg-red-500/20 text-red-300 border border-red-500/40 rounded font-bold">${m.win_reason || 'W.O. / DQ'}</span>` : ''}
-            <span class="text-slate-400">📅 ${dateStr}</span>
-            <span class="text-slate-400">⏱️ ${m.duration_minutes || 1}m</span>
-            <span class="text-slate-400">👤 Wasit: <strong class="text-slate-300">${refName}</strong></span>
+            <span class="px-2 py-0.5 bg-slate-800 text-slate-300 rounded font-semibold">🏟️ ${escapeHTML(courtName)}</span>
+            ${m.win_type && m.win_type !== 'normal' ? `<span class="px-2 py-0.5 bg-red-500/20 text-red-300 border border-red-500/40 rounded font-bold">${escapeHTML(m.win_reason || 'W.O. / DQ')}</span>` : ''}
+            <span class="text-slate-400">📅 ${escapeHTML(dateStr)}</span>
+            <span class="text-slate-400">⏱️ ${escapeHTML(m.duration_minutes || 1)}m</span>
+            <span class="text-slate-400">👤 Wasit: <strong class="text-slate-300">${escapeHTML(refName)}</strong></span>
           </div>
 
           <div class="flex flex-wrap items-center gap-2 text-base sm:text-lg font-bold">
-            <span class="${winA ? 'text-emerald-400' : 'text-slate-300'}">${m.team_a_name} ${winA ? '🏆' : ''}</span>
+            <span class="${winA ? 'text-emerald-400' : 'text-slate-300'}">${escapeHTML(m.team_a_name)} ${winA ? '🏆' : ''}</span>
             <span class="text-slate-600 text-xs font-black">VS</span>
-            <span class="${winB ? 'text-amber-400' : 'text-slate-300'}">${m.team_b_name} ${winB ? '🏆' : ''}</span>
+            <span class="${winB ? 'text-amber-400' : 'text-slate-300'}">${escapeHTML(m.team_b_name)} ${winB ? '🏆' : ''}</span>
           </div>
         </div>
 
         <div class="flex flex-wrap items-center gap-3 self-end lg:self-center">
           <div class="text-right">
             <div class="px-3.5 py-1.5 bg-slate-900 rounded-xl border border-slate-700 font-mono font-black text-base text-white">
-              ${setsStr || '0-0'}
+              ${escapeHTML(setsStr || '0-0')}
             </div>
-            ${totalPts > 0 ? `<div class="text-[10px] text-slate-400 font-mono mt-0.5">Total Poin: ${m.stats.total_points_a}-${m.stats.total_points_b}</div>` : ''}
+            ${totalPts > 0 ? `<div class="text-[10px] text-slate-400 font-mono mt-0.5">Total Poin: ${escapeHTML(m.stats.total_points_a)}-${escapeHTML(m.stats.total_points_b)}</div>` : ''}
           </div>
 
           <div class="flex items-center space-x-1.5">
-            <button onclick="openMatchDetailModal('${m.id}')" class="px-3 py-2 bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 rounded-xl text-xs font-bold transition">
+            <button onclick="openMatchDetailModal(${htmlArgument(m.id)})" class="px-3 py-2 bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 rounded-xl text-xs font-bold transition">
               🔍 Detail / Edit
             </button>
-            <button onclick="deleteMatchHistory('${m.id}')" class="px-2.5 py-2 bg-red-600/15 hover:bg-red-600 text-red-400 hover:text-white border border-red-500/30 rounded-xl text-xs font-bold transition" title="Hapus Match">
+            <button onclick="deleteMatchHistory(${htmlArgument(m.id)})" class="px-2.5 py-2 bg-red-600/15 hover:bg-red-600 text-red-400 hover:text-white border border-red-500/30 rounded-xl text-xs font-bold transition" title="Hapus Match">
               🗑️
             </button>
           </div>
@@ -2436,14 +1985,14 @@ function renderAdminUsersList() {
     const isAdmin = u.role === 'admin';
     return `
       <div class="p-3 bg-slate-950/80 rounded-2xl border ${isAdmin ? 'border-blue-500/40' : 'border-slate-800'} flex items-center space-x-3">
-        <img src="${u.picture || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(u.name || 'User')}`}" class="w-10 h-10 rounded-xl object-cover border border-slate-700">
+        <img src="${escapeHTML(u.picture || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(u.name || 'User')}`)}" class="w-10 h-10 rounded-xl object-cover border border-slate-700">
         <div class="flex-1 min-w-0">
           <div class="flex items-center space-x-1.5">
-            <span class="text-xs font-bold text-white truncate">${u.name || 'User'}</span>
+            <span class="text-xs font-bold text-white truncate">${escapeHTML(u.name || 'User')}</span>
             <span class="px-1.5 py-0.2 rounded text-[9px] font-black uppercase ${isAdmin ? 'bg-blue-500/20 text-blue-300 border border-blue-500/40' : 'bg-emerald-500/20 text-emerald-300'}">${isAdmin ? '🛡️ ADMIN' : '🎾 MEMBER'}</span>
           </div>
-          <div class="text-[10px] text-slate-400 truncate">${u.email || '-'}</div>
-          <div class="text-[9px] text-slate-500 mt-0.5">Login: ${u.last_login || '-'} (${u.login_count || 1}x)</div>
+          <div class="text-[10px] text-slate-400 truncate">${escapeHTML(u.email || '-')}</div>
+          <div class="text-[9px] text-slate-500 mt-0.5">Login: ${escapeHTML(u.last_login || '-')} (${escapeHTML(u.login_count || 1)}x)</div>
         </div>
       </div>
     `;
@@ -2455,26 +2004,21 @@ async function handleAdminRecalculateStats() {
   const res = await apiPost('/api/admin/recalculate-stats', {});
   if (res && (res.status === 'ok' || res.status === 'success')) {
     if (Array.isArray(res.players)) AppState.players = res.players;
-    saveToLocalCache();
     renderAdminDashboard();
     renderPlayersTab();
     showToast('✅ Statistik seluruh pemain berhasil disinkronkan!');
   } else {
-    renderAdminDashboard();
-    showToast('✅ Statistik pemain diperbarui!');
+    showToast(res?.error || 'Statistik gagal diperbarui.');
   }
 }
 
 async function handleAdminBackupJSON() {
   showToast('💾 Mengunduh backup database JSON...');
-  const backup = (await apiGet('/api/admin/backup')) || {
-    exported_at: new Date().toISOString(),
-    players: AppState.players,
-    matches: AppState.matches,
-    tournaments: AppState.tournaments,
-    courts: AppState.courts,
-    users: AppState.users
-  };
+  const backup = await apiGet('/api/admin/backup');
+  if (!backup) {
+    showToast('Backup gagal. Periksa koneksi ke database.');
+    return;
+  }
 
   const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -2500,12 +2044,12 @@ async function handleAdminRestoreJSON(fileOrEvent) {
     const text = await file.text();
     const payload = JSON.parse(text);
     const res = await apiPost('/api/admin/restore', payload);
-    if (res && (res.status === 'ok' || res.status === 'restored')) {
+    if (res?.status === 'success') {
       await refreshAdminDashboard(false);
       renderAll();
       showToast('✅ Restore database JSON berhasil!');
     } else {
-      showToast('⚠️ Gagal melakukan restore database.');
+      showToast(res?.error || 'Gagal melakukan restore database.');
     }
   } catch (err) {
     alert('File JSON tidak valid: ' + err.message);
@@ -2541,45 +2085,45 @@ function openMatchDetailModal(matchId) {
   bodyEl.innerHTML = `
     <div class="p-4 bg-slate-950 rounded-2xl border border-slate-800 space-y-3">
       <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
-        <span>🏟️ <strong>${getCourtDisplayName(m.court_id || 'court_1')}</strong> • ${(m.sport || 'Padel').toUpperCase()} (${m.mode === 'doubles' ? 'Ganda 2v2' : 'Tunggal 1v1'})</span>
-        <span>📅 ${dateStr} • ⏱️ ${m.duration_minutes || 1} Menit</span>
+        <span>🏟️ <strong>${escapeHTML(getCourtDisplayName(m.court_id || 'court_1'))}</strong> • ${escapeHTML((m.sport || 'Padel').toUpperCase())} (${m.mode === 'doubles' ? 'Ganda 2v2' : 'Tunggal 1v1'})</span>
+        <span>📅 ${escapeHTML(dateStr)} • ⏱️ ${escapeHTML(m.duration_minutes || 1)} Menit</span>
       </div>
 
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center text-center py-2">
         <div class="p-3 rounded-xl ${m.winner === 'team_a' ? 'bg-emerald-950/50 border border-emerald-500/40' : 'bg-slate-900 border border-slate-800'}">
           <div class="text-xs text-slate-400 font-bold">TIM A ${m.winner === 'team_a' ? '🏆 WINNER' : ''}</div>
-          <div class="text-base font-black text-white mt-0.5">${m.team_a_name}</div>
+          <div class="text-base font-black text-white mt-0.5">${escapeHTML(m.team_a_name)}</div>
         </div>
         <div class="font-mono font-black text-xl text-amber-400">
-          ${(m.sets_history || []).map(s => `${s.team_a}-${s.team_b}`).join(' | ') || '0-0'}
+          ${escapeHTML((m.sets_history || []).map(s => `${s.team_a}-${s.team_b}`).join(' | ') || '0-0')}
         </div>
         <div class="p-3 rounded-xl ${m.winner === 'team_b' ? 'bg-amber-950/50 border border-amber-500/40' : 'bg-slate-900 border border-slate-800'}">
           <div class="text-xs text-slate-400 font-bold">TIM B ${m.winner === 'team_b' ? '🏆 WINNER' : ''}</div>
-          <div class="text-base font-black text-white mt-0.5">${m.team_b_name}</div>
+          <div class="text-base font-black text-white mt-0.5">${escapeHTML(m.team_b_name)}</div>
         </div>
       </div>
 
-      <div class="text-xs text-center text-slate-400 font-mono">${setsStr || 'Tidak ada rincian set'}</div>
-      ${m.win_reason ? `<div class="text-xs text-center font-bold text-red-300 bg-red-950/50 py-1.5 px-3 rounded-xl border border-red-500/30">${m.win_reason}</div>` : ''}
+      <div class="text-xs text-center text-slate-400 font-mono">${escapeHTML(setsStr || 'Tidak ada rincian set')}</div>
+      ${m.win_reason ? `<div class="text-xs text-center font-bold text-red-300 bg-red-950/50 py-1.5 px-3 rounded-xl border border-red-500/30">${escapeHTML(m.win_reason)}</div>` : ''}
     </div>
 
     <!-- Detailed Match Telemetry -->
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-center">
       <div class="p-2.5 bg-slate-950/70 rounded-xl border border-slate-800">
         <div class="text-[10px] text-slate-400 font-bold uppercase">Total Poin</div>
-        <div class="text-sm font-mono font-bold text-white mt-0.5">${st.total_points_a || 0} - ${st.total_points_b || 0}</div>
+        <div class="text-sm font-mono font-bold text-white mt-0.5">${escapeHTML(st.total_points_a || 0)} - ${escapeHTML(st.total_points_b || 0)}</div>
       </div>
       <div class="p-2.5 bg-slate-950/70 rounded-xl border border-slate-800">
         <div class="text-[10px] text-slate-400 font-bold uppercase">Deuce / Golden</div>
-        <div class="text-sm font-mono font-bold text-amber-400 mt-0.5">${st.deuces_count || 0} / ${st.golden_points_count || 0}</div>
+        <div class="text-sm font-mono font-bold text-amber-400 mt-0.5">${escapeHTML(st.deuces_count || 0)} / ${escapeHTML(st.golden_points_count || 0)}</div>
       </div>
       <div class="p-2.5 bg-slate-950/70 rounded-xl border border-slate-800">
         <div class="text-[10px] text-slate-400 font-bold uppercase">Streak Maks</div>
-        <div class="text-sm font-mono font-bold text-emerald-400 mt-0.5">${st.max_streak_a || 0} - ${st.max_streak_b || 0}</div>
+        <div class="text-sm font-mono font-bold text-emerald-400 mt-0.5">${escapeHTML(st.max_streak_a || 0)} - ${escapeHTML(st.max_streak_b || 0)}</div>
       </div>
       <div class="p-2.5 bg-slate-950/70 rounded-xl border border-slate-800">
         <div class="text-[10px] text-slate-400 font-bold uppercase">Wasit Pencatat</div>
-        <div class="text-xs font-bold text-sky-400 mt-0.5 truncate">${m.scored_by?.name || 'Wasit'}</div>
+        <div class="text-xs font-bold text-sky-400 mt-0.5 truncate">${escapeHTML(m.scored_by?.name || 'Wasit')}</div>
       </div>
     </div>
 
@@ -2605,17 +2149,17 @@ function openMatchDetailModal(matchId) {
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
           <div>
             <label class="block text-[10px] font-bold text-slate-400 mb-1">Nama Tim A</label>
-            <input type="text" id="admin-corr-team-a" value="${(m.team_a_name || '').replace(/"/g, '&quot;')}" class="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white">
+            <input type="text" id="admin-corr-team-a" value="${escapeHTML((m.team_a_name || '').replace(/"/g, '&quot;'))}" class="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white">
           </div>
           <div>
             <label class="block text-[10px] font-bold text-slate-400 mb-1">Nama Tim B</label>
-            <input type="text" id="admin-corr-team-b" value="${(m.team_b_name || '').replace(/"/g, '&quot;')}" class="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white">
+            <input type="text" id="admin-corr-team-b" value="${escapeHTML((m.team_b_name || '').replace(/"/g, '&quot;'))}" class="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white">
           </div>
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
           <div>
             <label class="block text-[10px] font-bold text-slate-400 mb-1">Skor Set (pisahkan koma, misal: 6-4, 6-2)</label>
-            <input type="text" id="admin-corr-sets" value="${setsInputDefault}" class="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs font-mono text-white">
+            <input type="text" id="admin-corr-sets" value="${escapeHTML(setsInputDefault)}" class="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs font-mono text-white">
           </div>
           <div>
             <label class="block text-[10px] font-bold text-slate-400 mb-1">Pemenang</label>
@@ -2626,7 +2170,7 @@ function openMatchDetailModal(matchId) {
           </div>
         </div>
         <div class="flex justify-end">
-          <button onclick="handleAdminSaveMatchCorrection('${m.id}')" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-black rounded-xl text-xs shadow-lg transition">
+          <button onclick="handleAdminSaveMatchCorrection(${htmlArgument(m.id)})" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-black rounded-xl text-xs shadow-lg transition">
             💾 Simpan Koreksi Skor
           </button>
         </div>
@@ -2677,7 +2221,7 @@ async function handleAdminSaveMatchCorrection(matchId) {
     renderHistoryTab();
     showToast('✅ Koreksi skor pertandingan berhasil disimpan & statistik diperbarui!');
   } else {
-    showToast('⚠️ Gagal menyimpan koreksi pertandingan.');
+    showToast(res?.error || 'Gagal menyimpan koreksi pertandingan.');
   }
 }
 
@@ -2704,19 +2248,19 @@ function renderTournamentsList() {
         <div>
           <div class="flex items-center justify-between mb-2">
             <div class="flex items-center space-x-1.5">
-              <span class="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">${t.sport || 'Padel'}</span>
+              <span class="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">${escapeHTML(t.sport || 'Padel')}</span>
               <span class="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">${modeBadge}</span>
             </div>
             <span class="text-xs text-slate-400 font-semibold">${t.format === 'knockout' ? '🏆 Sistem Gugur' : '🔄 Klasemen Grup'}</span>
           </div>
-          <h4 class="text-lg font-extrabold text-white mb-1">${t.name}</h4>
+          <h4 class="text-lg font-extrabold text-white mb-1">${escapeHTML(t.name)}</h4>
           <p class="text-xs text-slate-400 mb-4">${(t.participants || []).length} Peserta • Target ${t.rules?.games_per_set || 6} Game • ${t.rules?.golden_point ? 'Golden Point ⭐' : 'Deuce Normal'}</p>
         </div>
         <div class="flex space-x-2">
-          <button onclick="viewTournamentBracket('${t.id}')" class="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs transition">
+          <button onclick="viewTournamentBracket(${htmlArgument(t.id)})" class="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs transition">
             Lihat Bagan / Jadwal
           </button>
-          <button onclick="deleteTournament('${t.id}')" class="px-3 py-2.5 bg-red-600/20 hover:bg-red-600/40 text-red-400 rounded-xl text-xs font-bold transition">
+          <button onclick="deleteTournament(${htmlArgument(t.id)})" class="px-3 py-2.5 bg-red-600/20 hover:bg-red-600/40 text-red-400 rounded-xl text-xs font-bold transition">
             🗑️
           </button>
         </div>
@@ -2726,6 +2270,10 @@ function renderTournamentsList() {
 }
 
 function openCreateTournamentModal() {
+  if (AppState.dataRevision < 0) {
+    showToast('Tunggu sampai data pemain terhubung ke server.');
+    return;
+  }
   AppState.tourneyDoublesTeams = [];
   populateTournamentParticipantPickers();
   const modeSel = document.getElementById('tourney-mode');
@@ -2753,11 +2301,11 @@ function populateTournamentParticipantPickers() {
   if (checklistEl) {
     checklistEl.innerHTML = (AppState.players || []).map((p, idx) => `
       <label class="flex items-center space-x-2.5 p-2 rounded-xl bg-slate-900 border border-slate-800 cursor-pointer hover:border-emerald-500/50 transition">
-        <input type="checkbox" name="tourney-single-participant" value="${p.id}" onchange="updateSinglesSelectedCountBadge()" ${idx < 4 ? 'checked' : ''} class="rounded text-emerald-500 focus:ring-0 w-4 h-4">
-        <img src="${resolvePlayerPhoto(p, p.name)}" class="w-7 h-7 rounded-lg object-cover">
+        <input type="checkbox" name="tourney-single-participant" value="${escapeHTML(p.id)}" onchange="updateSinglesSelectedCountBadge()" ${idx < 4 ? 'checked' : ''} class="rounded text-emerald-500 focus:ring-0 w-4 h-4">
+        <img src="${escapeHTML(resolvePlayerPhoto(p, p.name))}" class="w-7 h-7 rounded-lg object-cover">
         <div class="truncate">
-          <div class="text-xs font-bold text-white truncate">${p.name}</div>
-          <div class="text-[10px] text-slate-400">${p.level || p.skill_level || 'Intermediate'}</div>
+          <div class="text-xs font-bold text-white truncate">${escapeHTML(p.name)}</div>
+          <div class="text-[10px] text-slate-400">${escapeHTML(p.level || p.skill_level || 'Intermediate')}</div>
         </div>
       </label>
     `).join('');
@@ -2767,7 +2315,7 @@ function populateTournamentParticipantPickers() {
   const p1Sel = document.getElementById('tourney-pair-p1');
   const p2Sel = document.getElementById('tourney-pair-p2');
   const opts = '<option value="">-- Pilih Pemain --</option>' +
-    (AppState.players || []).map(p => `<option value="${p.id}">${p.name} (${p.level || p.skill_level || 'Intermediate'})</option>`).join('');
+    (AppState.players || []).map(p => `<option value="${escapeHTML(p.id)}">${escapeHTML(p.name)} (${escapeHTML(p.level || p.skill_level || 'Intermediate')})</option>`).join('');
 
   if (p1Sel) p1Sel.innerHTML = opts;
   if (p2Sel) p2Sel.innerHTML = opts;
@@ -2800,6 +2348,12 @@ function addDoublesTeamToTourney() {
     return;
   }
 
+  const alreadyPaired = AppState.tourneyDoublesTeams.some(team => team.players.some(player =>
+    player.id === p1Id || player.id === p2Id));
+  if (alreadyPaired) {
+    showToast('Salah satu pemain sudah terdaftar di pasangan lain.');
+    return;
+  }
   const p1 = (AppState.players || []).find(x => x.id === p1Id);
   const p2 = (AppState.players || []).find(x => x.id === p2Id);
   if (!p1 || !p2) return;
@@ -2873,15 +2427,15 @@ function renderFormedDoublesTeamsList() {
         <div class="flex items-center space-x-3">
           <span class="text-xs font-mono font-bold text-amber-400">#${idx + 1}</span>
           <div class="doubles-avatar-wrap">
-            <img src="${img1}" class="w-8 h-8 rounded-full object-cover border border-amber-400">
-            <img src="${img2}" class="w-8 h-8 rounded-full object-cover border border-emerald-400">
+            <img src="${escapeHTML(img1)}" class="w-8 h-8 rounded-full object-cover border border-amber-400">
+            <img src="${escapeHTML(img2)}" class="w-8 h-8 rounded-full object-cover border border-emerald-400">
           </div>
           <div>
-            <div class="text-xs font-extrabold text-white">${t.name}</div>
-            <div class="text-[10px] text-slate-400">${p1.name} + ${p2.name}</div>
+            <div class="text-xs font-extrabold text-white">${escapeHTML(t.name)}</div>
+            <div class="text-[10px] text-slate-400">${escapeHTML(p1.name)} + ${escapeHTML(p2.name)}</div>
           </div>
         </div>
-        <button type="button" onclick="removeDoublesTeam('${t.id}')" class="text-xs text-red-400 hover:text-red-300 font-bold px-2 py-1">✕ Hapus</button>
+        <button type="button" onclick="removeDoublesTeam(${htmlArgument(t.id)})" class="text-xs text-red-400 hover:text-red-300 font-bold px-2 py-1">✕ Hapus</button>
       </div>
     `;
   }).join('');
@@ -2921,47 +2475,40 @@ async function handleCreateTournament(e) {
     selectedParticipants = [...AppState.tourneyDoublesTeams];
   }
 
-  let bracket = null;
-  let schedule = [];
-  let standings = [];
-
-  if (format === 'knockout') {
-    bracket = TournamentManager.createKnockoutBracket(selectedParticipants);
-  } else {
-    const rr = TournamentManager.createRoundRobin(selectedParticipants);
-    schedule = rr.schedule;
-    standings = rr.standings;
-  }
-
-  const payload = {
-    name,
-    sport,
+  if (!name || selectedParticipants.length < 2) return;
+  const participants = selectedParticipants.map(participant => ({
+    ...matchPlayer(participant),
     mode,
-    format,
-    participants: selectedParticipants,
-    bracket,
-    schedule,
-    standings,
-    rules: {
-      sets_to_win: setsToWin,
-      games_per_set: gamesPerSet,
-      golden_point: goldenPoint
+    players: participant.players.map(matchPlayer)
+  }));
+  const rules = { sets_to_win: setsToWin, games_per_set: gamesPerSet, golden_point: goldenPoint };
+  const tournament = format === 'knockout'
+    ? TournamentManager.createKnockoutTournament(name, sport, mode, participants, rules)
+    : TournamentManager.createRoundRobinTournament(name, sport, mode, participants, rules);
+  const submit = e.currentTarget.querySelector('[type="submit"]');
+  if (submit.disabled) return;
+  submit.disabled = true;
+  try {
+    const response = await apiPost('/api/tournaments', tournament);
+    if (!response?.id || response.error) {
+      showToast(response?.error || 'Bagan gagal disimpan. Coba lagi.');
+      return;
     }
-  };
-
-  const res = await apiPost('/api/tournaments', payload);
-  await loadTournaments();
-  document.getElementById('create-tournament-modal').classList.add('hidden');
-  renderTournamentsList();
-  if (res && res.tournament) {
-    viewTournamentBracket(res.tournament.id);
+    AppState.tournaments = [response, ...AppState.tournaments.filter(item => item.id !== response.id)];
+    document.getElementById('create-tournament-modal').classList.add('hidden');
+    renderTournamentsList();
+    viewTournamentBracket(response.id);
+    showToast('🏆 Bagan turnamen berhasil dibuat.');
+    pollSharedState();
+  } finally {
+    submit.disabled = false;
   }
-  showToast('🏆 Turnamen berhasil dibuat!');
 }
 
 function viewTournamentBracket(tourneyId) {
-  const tourney = (AppState.tournaments || []).find(t => t.id === tourneyId);
-  if (!tourney) return;
+  const data = AppState.tournaments.find(t => t.id === tourneyId);
+  if (!data) return;
+  const tourney = TournamentManager.normalize(data);
   AppState.selectedTournament = tourney;
 
   const modal = document.getElementById('bracket-modal');
@@ -2972,6 +2519,9 @@ function viewTournamentBracket(tourneyId) {
     subEl.textContent = `${(tourney.sport || 'Padel').toUpperCase()} • ${tourney.mode === 'doubles' ? 'Ganda 2v2' : 'Tunggal 1v1'} • ${tourney.format === 'knockout' ? 'Sistem Gugur' : 'Round Robin'}`;
   }
 
+  document.getElementById('bracket-swap-button').classList.toggle('hidden',
+    tourney.format !== 'knockout' || TournamentManager.hasResults(tourney));
+  if (tourney.champion_name) subEl.textContent += ` • Juara: ${tourney.champion_name}`;
   if (modal) modal.classList.remove('hidden');
   renderBracketContent(tourney);
 }
@@ -2992,25 +2542,24 @@ function renderBracketContent(tourney) {
 }
 
 function renderKnockoutTree(tourney) {
-  if (!tourney.bracket || !tourney.bracket.rounds) return '';
-  return tourney.bracket.rounds.map(round => `
+  return tourney.rounds.map(round => `
     <div class="min-w-[295px] space-y-4">
-      <h4 class="text-xs font-extrabold uppercase tracking-wider text-amber-400 bg-slate-800/90 px-3 py-2 rounded-xl text-center border border-slate-700">${round.name}</h4>
+      <h4 class="text-xs font-extrabold uppercase tracking-wider text-amber-400 bg-slate-800/90 px-3 py-2 rounded-xl text-center border border-slate-700">${escapeHTML(round.name)}</h4>
       <div class="space-y-4 flex flex-col justify-around">
         ${round.matches.map(m => {
-          const pA = m.player_a;
-          const pB = m.player_b;
-          const isReady = pA && pB && !pA.is_bye && !pB.is_bye && m.status !== 'completed';
-          const winA = m.winner && pA && m.winner.id === pA.id;
-          const winB = m.winner && pB && m.winner.id === pB.id;
+          const pA = m.team_a;
+          const pB = m.team_b;
+          const isReady = TournamentManager.isPlayable(m);
+          const winA = m.winner === 'team_a';
+          const winB = m.winner === 'team_b';
 
           return `
             <div class="p-3.5 bg-slate-950 rounded-2xl border ${m.status === 'completed' ? 'border-emerald-500/40' : 'border-slate-800'} space-y-2 shadow-lg">
               <div class="flex items-center justify-between text-[10px] text-slate-500 font-bold">
-                <span>MATCH #${m.match_number}</span>
+                <span>MATCH #${escapeHTML(m.match_number)}</span>
                 <div class="flex items-center space-x-1">
-                  ${m.win_reason ? `<span class="text-red-400 font-extrabold">(${m.win_reason})</span>` : ''}
-                  <span class="${m.status === 'completed' ? 'text-emerald-400' : 'text-amber-400'}">${m.status.toUpperCase()}</span>
+                  ${m.win_reason ? `<span class="text-red-400 font-extrabold">(${escapeHTML(m.win_reason)})</span>` : ''}
+                  <span class="${m.status === 'completed' ? 'text-emerald-400' : 'text-amber-400'}">${escapeHTML(m.status.toUpperCase())}</span>
                 </div>
               </div>
 
@@ -3019,7 +2568,7 @@ function renderKnockoutTree(tourney) {
                 <div class="flex items-center space-x-2 truncate">
                   ${renderParticipantAvatar(pA)}
                   <div class="truncate">
-                    <div class="text-xs font-bold truncate">${pA ? pA.name : 'Menunggu...'}</div>
+                    <div class="text-xs font-bold truncate">${escapeHTML(pA ? pA.name : 'Menunggu...')}</div>
                     ${renderParticipantSubtext(pA)}
                   </div>
                 </div>
@@ -3031,21 +2580,21 @@ function renderKnockoutTree(tourney) {
                 <div class="flex items-center space-x-2 truncate">
                   ${renderParticipantAvatar(pB)}
                   <div class="truncate">
-                    <div class="text-xs font-bold truncate">${pB ? pB.name : 'Menunggu...'}</div>
+                    <div class="text-xs font-bold truncate">${escapeHTML(pB ? pB.name : 'Menunggu...')}</div>
                     ${renderParticipantSubtext(pB)}
                   </div>
                 </div>
                 ${winB ? '<span>🏆</span>' : ''}
               </div>
 
-              ${m.score_summary ? `<div class="text-center text-xs font-mono text-amber-400 bg-slate-900 py-1 rounded-lg">${m.score_summary}</div>` : ''}
+              ${m.score_display && m.score_display !== 'vs' ? `<div class="text-center text-xs font-mono text-amber-400 bg-slate-900 py-1 rounded-lg">${escapeHTML(m.score_display)}</div>` : ''}
 
               ${isReady ? `
                 <div class="grid grid-cols-3 gap-1.5 mt-1">
-                  <button onclick="startTournamentMatch('${tourney.id}', '${m.id}')" class="col-span-2 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs transition shadow">
+                  <button onclick="startTournamentMatch(${htmlArgument(tourney.id)}, ${htmlArgument(m.id)})" class="col-span-2 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs transition shadow">
                     ▶ Mainkan Skor
                   </button>
-                  <button onclick="openBracketWalkoverPrompt('${tourney.id}', '${m.id}')" class="py-2 bg-red-600/20 hover:bg-red-600/40 text-red-300 border border-red-500/30 font-bold rounded-xl text-[11px] transition" title="Menang W.O. / Diskualifikasi">
+                  <button onclick="openBracketWalkoverPrompt(${htmlArgument(tourney.id)}, ${htmlArgument(m.id)})" class="py-2 bg-red-600/20 hover:bg-red-600/40 text-red-300 border border-red-500/30 font-bold rounded-xl text-[11px] transition" title="Menang W.O. / Diskualifikasi">
                     🏳️ W.O./DQ
                   </button>
                 </div>
@@ -3065,19 +2614,19 @@ function renderParticipantAvatar(p) {
     const img2 = resolvePlayerPhoto(p.players[1], 'P2');
     return `
       <div class="doubles-avatar-wrap flex-shrink-0">
-        <img src="${img1}" class="w-6 h-6 rounded-full object-cover border border-emerald-400">
-        <img src="${img2}" class="w-6 h-6 rounded-full object-cover border border-amber-400">
+        <img src="${escapeHTML(img1)}" class="w-6 h-6 rounded-full object-cover border border-emerald-400">
+        <img src="${escapeHTML(img2)}" class="w-6 h-6 rounded-full object-cover border border-amber-400">
       </div>
     `;
   }
   const img = resolvePlayerPhoto(p, p.name);
-  return `<img src="${img}" class="w-6 h-6 rounded-full object-cover flex-shrink-0">`;
+  return `<img src="${escapeHTML(img)}" class="w-6 h-6 rounded-full object-cover flex-shrink-0">`;
 }
 
 function renderParticipantSubtext(p) {
   if (!p || p.is_bye) return '';
   if (p.mode === 'doubles' && p.players && p.players.length >= 2) {
-    return `<div class="text-[9px] text-slate-400 truncate">${p.players[0].name} & ${p.players[1].name}</div>`;
+    return `<div class="text-[9px] text-slate-400 truncate">${escapeHTML(p.players[0].name)} & ${escapeHTML(p.players[1].name)}</div>`;
   }
   return '';
 }
@@ -3100,13 +2649,13 @@ function renderRoundRobinView(tourney) {
             </tr>
           </thead>
           <tbody class="divide-y divide-slate-800/60">
-            ${(tourney.standings || []).map((row, i) => `
+            ${TournamentManager.calculateStandings(tourney).map((row, i) => `
               <tr class="hover:bg-slate-800/40">
                 <td class="py-2.5 px-3 font-bold text-slate-400">${i + 1}</td>
-                <td class="py-2.5 px-3 font-bold text-white">${row.player_name}</td>
+                <td class="py-2.5 px-3 font-bold text-white">${escapeHTML(row.participant.name)}</td>
                 <td class="py-2.5 px-3 text-center">${row.played}</td>
-                <td class="py-2.5 px-3 text-center text-emerald-400 font-bold">${row.wins}</td>
-                <td class="py-2.5 px-3 text-center text-red-400">${row.losses}</td>
+                <td class="py-2.5 px-3 text-center text-emerald-400 font-bold">${row.won}</td>
+                <td class="py-2.5 px-3 text-center text-red-400">${row.lost}</td>
                 <td class="py-2.5 px-3 text-center font-mono">${row.games_won - row.games_lost}</td>
                 <td class="py-2.5 px-3 text-center font-extrabold text-amber-400">${row.points}</td>
               </tr>
@@ -3117,24 +2666,24 @@ function renderRoundRobinView(tourney) {
 
       <!-- Jadwal Pertandingan -->
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-        ${(tourney.schedule || []).map(m => `
+        ${tourney.rounds.flatMap(round => round.matches).map((m, index) => `
           <div class="p-3.5 bg-slate-950 rounded-2xl border border-slate-800 flex flex-col justify-between space-y-2">
             <div class="text-xs font-bold text-slate-400 flex justify-between">
-              <span>Match #${m.match_number}</span>
-              <span class="${m.status === 'completed' ? 'text-emerald-400' : 'text-amber-400'}">${m.status}</span>
+              <span>Match #${index + 1}</span>
+              <span class="${m.status === 'completed' ? 'text-emerald-400' : 'text-amber-400'}">${escapeHTML(m.status)}</span>
             </div>
             <div class="text-sm font-bold text-white flex items-center justify-between">
-              <span class="truncate max-w-[42%]">${m.player_a.name}</span>
+              <span class="truncate max-w-[42%]">${escapeHTML(m.team_a.name)}</span>
               <span class="text-xs text-slate-500">VS</span>
-              <span class="truncate max-w-[42%] text-right">${m.player_b.name}</span>
+              <span class="truncate max-w-[42%] text-right">${escapeHTML(m.team_b.name)}</span>
             </div>
-            ${m.score_summary ? `<div class="text-xs font-mono text-center text-emerald-400 bg-slate-900 py-1 rounded">${m.score_summary} ${m.win_reason ? `(${m.win_reason})` : ''}</div>` : ''}
+            ${m.score_display && m.score_display !== 'vs' ? `<div class="text-xs font-mono text-center text-emerald-400 bg-slate-900 py-1 rounded">${escapeHTML(m.score_display)}</div>` : ''}
             ${m.status !== 'completed' ? `
               <div class="grid grid-cols-3 gap-1.5">
-                <button onclick="startTournamentMatch('${tourney.id}', '${m.id}')" class="col-span-2 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs transition">
+                <button onclick="startTournamentMatch(${htmlArgument(tourney.id)}, ${htmlArgument(m.id)})" class="col-span-2 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs transition">
                   ▶ Mainkan
                 </button>
-                <button onclick="openBracketWalkoverPrompt('${tourney.id}', '${m.id}')" class="py-1.5 bg-red-600/20 hover:bg-red-600/40 text-red-300 border border-red-500/30 font-bold rounded-xl text-[11px] transition">
+                <button onclick="openBracketWalkoverPrompt(${htmlArgument(tourney.id)}, ${htmlArgument(m.id)})" class="py-1.5 bg-red-600/20 hover:bg-red-600/40 text-red-300 border border-red-500/30 font-bold rounded-xl text-[11px] transition">
                   🏳️ W.O.
                 </button>
               </div>
@@ -3146,123 +2695,62 @@ function renderRoundRobinView(tourney) {
   `;
 }
 
-function startTournamentMatch(tourneyId, matchId) {
-  const tourney = (AppState.tournaments || []).find(t => t.id === tourneyId);
-  if (!tourney) return;
-
-  let targetMatch = null;
-  if (tourney.format === 'knockout') {
-    for (const r of tourney.bracket.rounds) {
-      const found = r.matches.find(m => m.id === matchId);
-      if (found) { targetMatch = found; break; }
-    }
-  } else {
-    targetMatch = tourney.schedule.find(m => m.id === matchId);
+async function startTournamentMatch(tourneyId, matchId) {
+  const data = AppState.tournaments.find(tournament => tournament.id === tourneyId);
+  if (!data) return;
+  const tournament = TournamentManager.normalize(data);
+  const fixture = TournamentManager.findMatch(tournament, matchId);
+  if (!TournamentManager.isPlayable(fixture)) return;
+  const occupied = AppState.courts.find(court => court.active_match?.tournament_id === tourneyId
+    && court.active_match.tournament_match_id === matchId);
+  if (occupied) {
+    document.getElementById('bracket-modal').classList.add('hidden');
+    switchToCourtAndOpenScorer(occupied.id);
+    return;
   }
-
-  if (!targetMatch || !targetMatch.player_a || !targetMatch.player_b) return;
-
-  const pA = targetMatch.player_a;
-  const pB = targetMatch.player_b;
-  const isDoubles = tourney.mode === 'doubles' || pA.mode === 'doubles';
-
-  AppState.scorer = new MatchScorer({
-    sport: tourney.sport || 'padel',
-    mode: isDoubles ? 'doubles' : 'singles',
-    court_id: AppState.currentCourtId,
-    scored_by: AppState.currentUser ? {
-      name: AppState.currentUser.name,
-      email: AppState.currentUser.email,
-      role: AppState.currentUser.role
-    } : null,
-    tournament_id: tourney.id,
-    tournament_match_id: targetMatch.id,
-    team_a_name: pA.name,
-    team_b_name: pB.name,
-    team_a_players: pA.players || [pA],
-    team_b_players: pB.players || [pB],
-    team_a_photo: pA.photo_url || '',
-    team_b_photo: pB.photo_url || '',
+  if (AppState.courts.find(court => court.id === AppState.currentCourtId)?.active_match) {
+    showToast('Lapangan ini sedang dipakai. Tutup bagan dan pilih lapangan kosong.');
+    return;
+  }
+  const games = tournament.rules?.games_per_set || 6;
+  const response = await startSharedMatch(AppState.currentCourtId, {
+    tournament_id: tourneyId, tournament_match_id: matchId,
+    sport: tournament.sport || 'padel', mode: tournament.mode || 'singles',
+    team_a_name: fixture.team_a.name, team_b_name: fixture.team_b.name,
+    team_a_players: fixture.team_a.players || [fixture.team_a],
+    team_b_players: fixture.team_b.players || [fixture.team_b],
     rules: {
-      sets_to_win: tourney.rules?.sets_to_win || 2,
-      games_per_set: tourney.rules?.games_per_set || 6,
-      golden_point: tourney.rules?.golden_point || false,
-      tiebreak_at: tourney.rules?.games_per_set || 6,
-      tiebreak_points: 7
+      sets_to_win: tournament.rules?.sets_to_win || 2, games_per_set: games,
+      golden_point: Boolean(tournament.rules?.golden_point), tiebreak_at: games, tiebreak_points: 7
     }
   });
-
-  document.getElementById('bracket-modal')?.classList.add('hidden');
-  AppState.matchDurationSecs = 0;
-  AppState.modalShown = false;
-  startMatchTimer();
-  updateScoreboardUI(true);
-  syncActiveCourt(true);
-  switchTab('scorer');
-  showToast(`🏆 Match Turnamen: ${pA.name} vs ${pB.name} dimulai!`);
+  if (response) document.getElementById('bracket-modal').classList.add('hidden');
 }
 
 async function openBracketWalkoverPrompt(tourneyId, matchId) {
-  const tourney = (AppState.tournaments || []).find(t => t.id === tourneyId);
-  if (!tourney) return;
-
-  let targetMatch = null;
-  if (tourney.format === 'knockout') {
-    for (const r of tourney.bracket.rounds) {
-      const found = r.matches.find(m => m.id === matchId);
-      if (found) { targetMatch = found; break; }
-    }
-  } else {
-    targetMatch = tourney.schedule.find(m => m.id === matchId);
+  const data = AppState.tournaments.find(tournament => tournament.id === tourneyId);
+  if (!data) return;
+  const tournament = TournamentManager.normalize(data);
+  const fixture = TournamentManager.findMatch(tournament, matchId);
+  if (!TournamentManager.isPlayable(fixture)) return;
+  const choice = prompt(`Pilih pemenang W.O. / DQ:
+1. ${fixture.team_a.name}
+2. ${fixture.team_b.name}`);
+  if (!['1', '2'].includes(choice)) return;
+  const reason = prompt('Masukkan alasan (W.O., diskualifikasi, atau cedera).', 'Menang W.O.');
+  if (reason === null) return;
+  const response = await apiPost('/api/matches', {
+    tournament_id: tourneyId, tournament_match_id: matchId,
+    sport: tournament.sport, mode: tournament.mode, court_id: AppState.currentCourtId,
+    winner: choice === '1' ? 'team_a' : 'team_b',
+    win_type: 'walkover', win_reason: reason
+  });
+  if (!response?.match) {
+    showToast(response?.error || 'Hasil gagal disimpan.');
+    return;
   }
-
-  if (!targetMatch || !targetMatch.player_a || !targetMatch.player_b) return;
-
-  const choice = prompt(
-    `Pilih Pemenang Walkover (W.O.) / Diskualifikasi:\n` +
-    `Ketik "1" untuk memenangkan: ${targetMatch.player_a.name}\n` +
-    `Ketik "2" untuk memenangkan: ${targetMatch.player_b.name}`,
-    '1'
-  );
-  if (choice !== '1' && choice !== '2') return;
-
-  const reason = prompt('Masukkan alasan (misal: Lawan W.O. / Diskualifikasi / Cedera):', 'Menang W.O. (Lawan Diskualifikasi)') || 'Menang W.O.';
-  const winnerTeam = choice === '1' ? 'team_a' : 'team_b';
-
-  const matchResult = {
-    sport: tourney.sport || 'padel',
-    mode: tourney.mode || 'singles',
-    court_id: AppState.currentCourtId,
-    scored_by: AppState.currentUser ? {
-      name: AppState.currentUser.name,
-      email: AppState.currentUser.email,
-      role: AppState.currentUser.role
-    } : null,
-    tournament_id: tourney.id,
-    tournament_match_id: targetMatch.id,
-    team_a_name: targetMatch.player_a.name,
-    team_b_name: targetMatch.player_b.name,
-    team_a_players: targetMatch.player_a.players || [targetMatch.player_a],
-    team_b_players: targetMatch.player_b.players || [targetMatch.player_b],
-    winner: winnerTeam,
-    winner_name: winnerTeam === 'team_a' ? targetMatch.player_a.name : targetMatch.player_b.name,
-    win_type: 'walkover',
-    win_reason: reason,
-    sets_history: [
-      { team_a: winnerTeam === 'team_a' ? 6 : 0, team_b: winnerTeam === 'team_b' ? 6 : 0, winner: winnerTeam },
-      { team_a: winnerTeam === 'team_a' ? 6 : 0, team_b: winnerTeam === 'team_b' ? 6 : 0, winner: winnerTeam }
-    ],
-    duration_minutes: 1,
-    status: 'completed'
-  };
-
-  await apiPost('/api/matches', matchResult);
-  TournamentManager.recordMatchResult(tourney, targetMatch.id, matchResult);
-  await apiPut(`/api/tournaments/${tourney.id}`, tourney);
-
-  await Promise.all([loadTournaments(), loadMatches(), loadPlayers()]);
-  viewTournamentBracket(tourney.id);
-  showToast(`🏳️ Hasil ${reason} berhasil dicatat ke bagan!`);
+  await fetchBootstrapData();
+  showToast('🏳️ Hasil W.O. tercatat di bagan.');
 }
 
 function openSwapBracketModal() {
@@ -3272,20 +2760,20 @@ function openSwapBracketModal() {
     return;
   }
 
-  const r1 = tourney.bracket.rounds[0];
+  const r1 = tourney.rounds[0];
   const slots = [];
   r1.matches.forEach((m, mIdx) => {
     slots.push({
       key: `${mIdx}_a`,
-      label: `Match #${m.match_number} - Slot Atas: ${m.player_a ? m.player_a.name : 'BYE'}`
+      label: `Match #${m.match_number} - Slot Atas: ${m.team_a ? m.team_a.name : 'BYE'}`
     });
     slots.push({
       key: `${mIdx}_b`,
-      label: `Match #${m.match_number} - Slot Bawah: ${m.player_b ? m.player_b.name : 'BYE'}`
+      label: `Match #${m.match_number} - Slot Bawah: ${m.team_b ? m.team_b.name : 'BYE'}`
     });
   });
 
-  const optsHtml = slots.map(s => `<option value="${s.key}">${s.label}</option>`).join('');
+  const optsHtml = slots.map(s => `<option value="${s.key}">${escapeHTML(s.label)}</option>`).join('');
   const sel1 = document.getElementById('swap-slot-1');
   const sel2 = document.getElementById('swap-slot-2');
   if (sel1) sel1.innerHTML = optsHtml;
@@ -3311,50 +2799,56 @@ async function confirmSwapParticipants() {
   const [mIdx1, side1] = key1.split('_');
   const [mIdx2, side2] = key2.split('_');
 
-  const r1 = tourney.bracket.rounds[0];
-  const prop1 = side1 === 'a' ? 'player_a' : 'player_b';
-  const prop2 = side2 === 'a' ? 'player_a' : 'player_b';
-
-  const temp = r1.matches[parseInt(mIdx1)][prop1];
-  r1.matches[parseInt(mIdx1)][prop1] = r1.matches[parseInt(mIdx2)][prop2];
-  r1.matches[parseInt(mIdx2)][prop2] = temp;
-
-  TournamentManager.recomputeRound1Byes(tourney.bracket);
-
-  await apiPut(`/api/tournaments/${tourney.id}`, tourney);
-
-  document.getElementById('modal-swap-bracket').classList.add('hidden');
-  renderBracketContent(tourney);
-  showToast('🔄 Posisi peserta di bagan berhasil ditukar!');
+  const updated = structuredClone(tourney);
+  const swap = TournamentManager.swapRound1Participants(updated,
+    Number(mIdx1), 'team_' + side1, Number(mIdx2), 'team_' + side2);
+  if (!swap.success) {
+    showToast(swap.message);
+    return;
+  }
+  await saveBracketChanges(updated, '🔄 Posisi peserta berhasil ditukar.');
 }
 
 async function handleReshuffleBracket(tourneyId) {
-  const tourney = tourneyId
-    ? (AppState.tournaments || []).find(t => t.id === tourneyId)
+  const data = tourneyId ? AppState.tournaments.find(tournament => tournament.id === tourneyId)
     : AppState.selectedTournament;
-  if (!tourney) return;
-
-  if (!confirm('Acak ulang seluruh posisi peserta di bagan? (Progress pertandingan di turnamen ini akan di-reset)')) return;
-
-  if (tourney.format === 'knockout') {
-    tourney.bracket = TournamentManager.createKnockoutBracket(tourney.participants);
-  } else {
-    const shuffled = [...tourney.participants].sort(() => Math.random() - 0.5);
-    const rr = TournamentManager.createRoundRobin(shuffled);
-    tourney.schedule = rr.schedule;
-    tourney.standings = rr.standings;
+  if (!data) return;
+  const tournament = TournamentManager.normalize(data);
+  if (TournamentManager.hasResults(tournament)) {
+    showToast('Bagan sudah memiliki hasil pertandingan.');
+    return;
   }
+  if (!confirm('Acak ulang posisi peserta di bagan?')) return;
+  const participants = [...tournament.participants];
+  for (let i = participants.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [participants[i], participants[j]] = [participants[j], participants[i]];
+  }
+  const rebuilt = tournament.format === 'knockout'
+    ? TournamentManager.createKnockoutTournament(tournament.name, tournament.sport, tournament.mode, participants, tournament.rules)
+    : TournamentManager.createRoundRobinTournament(tournament.name, tournament.sport, tournament.mode, participants, tournament.rules);
+  await saveBracketChanges({ ...tournament, rounds: rebuilt.rounds, participants }, '🎲 Bagan berhasil diacak ulang.');
+}
 
-  await apiPut(`/api/tournaments/${tourney.id}`, tourney);
-  await loadTournaments();
-  document.getElementById('modal-swap-bracket')?.classList.add('hidden');
-  viewTournamentBracket(tourney.id);
-  showToast('🎲 Bagan turnamen berhasil diacak ulang!');
+async function saveBracketChanges(tournament, message) {
+  const response = await apiPut(`/api/tournaments/${tournament.id}`, tournament);
+  if (!response?.tournament) {
+    showToast(response?.error || 'Perubahan bagan gagal disimpan.');
+    return;
+  }
+  document.getElementById('modal-swap-bracket').classList.add('hidden');
+  await fetchBootstrapData();
+  viewTournamentBracket(tournament.id);
+  showToast(message);
 }
 
 async function deleteTournament(id) {
   if (!confirm('Hapus turnamen ini?')) return;
-  await fetch(`/api/tournaments/${id}`, { method: 'DELETE' });
+  const response = await apiWrite(`/api/tournaments/${id}`, 'DELETE');
+  if (response?.status !== 'deleted') {
+    showToast(response?.error || 'Turnamen gagal dihapus.');
+    return;
+  }
   await loadTournaments();
   renderTournamentsList();
   document.getElementById('bracket-modal')?.classList.add('hidden');
@@ -3378,15 +2872,14 @@ function renderPlayersTab() {
   grid.innerHTML = enriched.map(p => {
     const avatar = resolvePlayerPhoto(p, p.name);
     const hasVoice = Boolean(p.slogan_audio_url || p.slogan_text);
-    const safeName = (p.name || '').replace(/'/g, "\\'");
 
     return `
       <div class="p-5 bg-slate-900 rounded-3xl border border-slate-800 flex flex-col justify-between space-y-4 hover:border-slate-700 transition shadow-lg">
         <div class="flex items-center space-x-4">
-          <img src="${avatar}" class="w-16 h-16 rounded-2xl object-cover border-2 border-emerald-500/40 bg-slate-800">
+          <img src="${escapeHTML(avatar)}" class="w-16 h-16 rounded-2xl object-cover border-2 border-emerald-500/40 bg-slate-800">
           <div class="flex-1 min-w-0">
-            <span class="px-2 py-0.5 text-[10px] font-bold uppercase rounded-md bg-slate-800 text-emerald-400 border border-slate-700">${p.level}</span>
-            <h4 class="text-lg font-extrabold text-white truncate mt-1">${p.name}</h4>
+            <span class="px-2 py-0.5 text-[10px] font-bold uppercase rounded-md bg-slate-800 text-emerald-400 border border-slate-700">${escapeHTML(p.level)}</span>
+            <h4 class="text-lg font-extrabold text-white truncate mt-1">${escapeHTML(p.name)}</h4>
             <p class="text-xs text-slate-400">Menang: <strong class="text-emerald-400">${p.wins || 0}</strong> • Kalah: <strong class="text-red-400">${p.losses || 0}</strong> (${p.winRate}%)</p>
           </div>
         </div>
@@ -3394,25 +2887,30 @@ function renderPlayersTab() {
         <div class="p-3 bg-slate-950/90 rounded-2xl border border-slate-800/80 text-xs space-y-2">
           <div class="flex items-center justify-between text-slate-400 font-semibold">
             <span>🔊 Slogan Kemenangan:</span>
-            ${hasVoice ? `<button onclick="window.soundEngine.playVictorySlogan(AppState.players.find(x=>x.id==='${p.id}'), '${safeName}')" class="text-emerald-400 hover:underline font-bold">▶ Putar Suara</button>` : '<span class="text-slate-600">Belum ada</span>'}
+            ${hasVoice ? `<button onclick="playPlayerSlogan(${htmlArgument(p.id)})" class="text-emerald-400 hover:underline font-bold">▶ Putar Suara</button>` : '<span class="text-slate-600">Belum ada</span>'}
           </div>
-          <p class="italic text-amber-300 font-medium">"${p.slogan_text || 'Belum mengatur teks slogan'}"</p>
+          <p class="italic text-amber-300 font-medium">"${escapeHTML(p.slogan_text || 'Belum mengatur teks slogan')}"</p>
         </div>
 
         <div class="flex space-x-2">
-          <button onclick="editPlayer('${p.id}')" class="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold transition">✏️ Edit / Rekam Suara</button>
-          <button onclick="deletePlayer('${p.id}')" class="px-3 py-2 bg-red-500/10 hover:bg-red-500/30 text-red-400 rounded-xl text-xs font-bold transition">🗑️</button>
+          <button onclick="editPlayer(${htmlArgument(p.id)})" class="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold transition">✏️ Edit / Rekam Suara</button>
+          <button onclick="deletePlayer(${htmlArgument(p.id)})" class="px-3 py-2 bg-red-500/10 hover:bg-red-500/30 text-red-400 rounded-xl text-xs font-bold transition">🗑️</button>
         </div>
       </div>
     `;
   }).join('');
 }
 
+function playPlayerSlogan(id) {
+  const player = AppState.players.find(item => item.id === id);
+  if (player) window.soundEngine.playVictorySlogan(player, player.name);
+}
+
 function openPlayerModal(player = null) {
   document.getElementById('player-form-id').value = player ? player.id : '';
   document.getElementById('player-form-name').value = player ? player.name : '';
   document.getElementById('player-form-nickname').value = player ? (player.nickname || '') : '';
-  document.getElementById('player-form-hand').value = player ? (player.hand || 'Kanan') : 'Kanan';
+  document.getElementById('player-form-hand').value = player ? (player.handedness || player.hand || 'Kanan') : 'Kanan';
   document.getElementById('player-form-level').value = player ? (player.level || player.skill_level || 'Intermediate') : 'Intermediate';
   document.getElementById('player-form-slogan-text').value = player ? (player.slogan_text || '') : '';
   document.getElementById('player-form-photo-url').value = player ? (player.photo_url || '') : '';
@@ -3513,10 +3011,11 @@ async function toggleVoiceRecording() {
         if (e.data.size > 0) AppState.audioChunks.push(e.data);
       };
 
-      AppState.mediaRecorder.onstop = async () => {
-        const blob = new Blob(AppState.audioChunks, { type: 'audio/webm' });
+      const recorder = AppState.mediaRecorder;
+      recorder.onstop = async () => {
+        const blob = new Blob(AppState.audioChunks, { type: recorder.mimeType || AppState.audioChunks[0]?.type });
+        stream.getTracks().forEach(track => track.stop());
         await uploadRecordedAudioBlob(blob);
-        stream.getTracks().forEach(t => t.stop());
       };
 
       AppState.mediaRecorder.start();
@@ -3579,7 +3078,7 @@ async function handleSavePlayer(e) {
   const payload = {
     name: document.getElementById('player-form-name').value.trim(),
     nickname: document.getElementById('player-form-nickname').value.trim(),
-    hand: document.getElementById('player-form-hand').value,
+    handedness: document.getElementById('player-form-hand').value,
     level: levelVal,
     skill_level: levelVal,
     slogan_text: document.getElementById('player-form-slogan-text').value.trim(),
@@ -3588,10 +3087,10 @@ async function handleSavePlayer(e) {
     notes: document.getElementById('player-form-notes').value.trim()
   };
 
-  if (id) {
-    await apiPut(`/api/players/${id}`, payload);
-  } else {
-    await apiPost('/api/players', payload);
+  const saved = id ? await apiPut(`/api/players/${id}`, payload) : await apiPost('/api/players', payload);
+  if (!saved?.id) {
+    showToast(saved?.error || 'Profil gagal disimpan.');
+    return;
   }
 
   await loadPlayers();
@@ -3609,7 +3108,11 @@ function editPlayer(id) {
 
 async function deletePlayer(id) {
   if (!confirm('Hapus pemain ini dari daftar?')) return;
-  await fetch(`/api/players/${id}`, { method: 'DELETE' });
+  const result = await apiWrite(`/api/players/${id}`, 'DELETE');
+  if (result?.status !== 'deleted') {
+    showToast(result?.error || 'Profil gagal dihapus.');
+    return;
+  }
   await loadPlayers();
   renderPlayersTab();
   if (AppState.currentTab === 'admin') renderAdminDashboard();
@@ -3640,25 +3143,27 @@ function renderHistoryTab() {
       <div class="p-4 bg-slate-900 rounded-2xl border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 hover:border-slate-700 transition">
         <div class="space-y-1">
           <div class="flex flex-wrap items-center gap-1.5 text-xs">
-            <span class="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 rounded font-bold uppercase">${m.sport || 'PADEL'}</span>
+            <span class="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 rounded font-bold uppercase">${escapeHTML(m.sport || 'PADEL')}</span>
             <span class="px-2 py-0.5 bg-indigo-500/10 text-indigo-300 rounded font-bold uppercase">${isDoubles ? '👥 2v2' : '👤 1v1'}</span>
-            <span class="px-2 py-0.5 bg-slate-800 text-slate-300 rounded font-semibold">🏟️ ${courtName}</span>
-            ${m.win_type && m.win_type !== 'normal' ? `<span class="px-2 py-0.5 bg-red-500/20 text-red-300 border border-red-500/40 rounded font-bold">${m.win_reason || 'W.O. / DQ'}</span>` : ''}
-            <span class="text-slate-500">${dateStr}</span>
-            <span class="text-slate-500">• ${m.duration_minutes || 1} Menit</span>
+            <span class="px-2 py-0.5 bg-slate-800 text-slate-300 rounded font-semibold">🏟️ ${escapeHTML(courtName)}</span>
+            ${m.win_type && m.win_type !== 'normal' ? `<span class="px-2 py-0.5 bg-red-500/20 text-red-300 border border-red-500/40 rounded font-bold">${escapeHTML(m.win_reason || 'W.O. / DQ')}</span>` : ''}
+            <span class="text-slate-500">${escapeHTML(dateStr)}</span>
+            <span class="text-slate-500">• ${escapeHTML(m.duration_minutes || 1)} Menit</span>
           </div>
           <div class="flex items-center space-x-3 text-base sm:text-lg font-bold pt-1">
-            <span class="${winA ? 'text-emerald-400' : 'text-slate-300'}">${m.team_a_name} ${winA ? '🏆' : ''}</span>
+            <span class="${winA ? 'text-emerald-400' : 'text-slate-300'}">${escapeHTML(m.team_a_name)} ${winA ? '🏆' : ''}</span>
             <span class="text-slate-600 text-xs">VS</span>
-            <span class="${winB ? 'text-amber-400' : 'text-slate-300'}">${m.team_b_name} ${winB ? '🏆' : ''}</span>
+            <span class="${winB ? 'text-amber-400' : 'text-slate-300'}">${escapeHTML(m.team_b_name)} ${winB ? '🏆' : ''}</span>
           </div>
         </div>
         <div class="flex items-center space-x-2 self-end sm:self-center">
           <div class="px-4 py-2 bg-slate-950 rounded-xl border border-slate-800 font-mono font-extrabold text-base text-white">
-            ${setsStr || '0-0'}
+            ${escapeHTML(setsStr || '0-0')}
           </div>
-          <button onclick="openMatchDetailModal('${m.id}')" class="p-2 text-indigo-400 hover:bg-indigo-500/10 rounded-xl transition text-xs font-bold" title="Detail Match">🔍</button>
-          <button onclick="deleteMatchHistory('${m.id}')" class="p-2 text-slate-500 hover:text-red-400 transition" title="Hapus">🗑️</button>
+          <button onclick="openMatchDetailModal(${htmlArgument(m.id)})" class="p-2 text-indigo-400 hover:bg-indigo-500/10 rounded-xl transition text-xs font-bold" title="Detail Match">🔍</button>
+          ${AppState.currentUser?.role === 'admin'
+            ? `<button onclick="deleteMatchHistory(${htmlArgument(m.id)})" class="p-2 text-slate-500 hover:text-red-400 transition" title="Hapus">🗑️</button>`
+            : ''}
         </div>
       </div>
     `;
@@ -3667,7 +3172,11 @@ function renderHistoryTab() {
 
 async function deleteMatchHistory(id) {
   if (!confirm('Hapus riwayat pertandingan ini?')) return;
-  await fetch(`/api/matches/${id}`, { method: 'DELETE' });
+  const result = await apiWrite(`/api/matches/${id}`, 'DELETE');
+  if (result?.status !== 'deleted') {
+    showToast(result?.error || 'Riwayat gagal dihapus.');
+    return;
+  }
   await Promise.all([loadMatches(), loadPlayers()]);
   renderHistoryTab();
   if (AppState.currentTab === 'admin') {
@@ -3705,7 +3214,11 @@ async function handleSaveSettings(e) {
     google_client_id: clientId,
     voice_lang: voiceLang
   };
-  await apiPost('/api/settings', payload);
+  const result = await apiPost('/api/settings', payload);
+  if (!result || result.error) {
+    showToast(result?.error || 'Gagal menyimpan pengaturan.');
+    return;
+  }
   await loadSettings();
   renderSettingsTab();
   initGoogleIdentityClient();
@@ -3719,21 +3232,21 @@ async function testGoogleSheetConnection() {
     return;
   }
   showToast('⏳ Mengirim data tes ke Google Sheet...');
-  const res = await apiPost('/api/sheets/test', { google_sheet_url: url, webhook_url: url });
+  const res = await apiPost('/api/test-sheet-connection', { google_sheet_url: url });
   if (res && (res.success || res.status === 'success')) {
-    showToast('✅ Terhubung! Baris tes berhasil dikirim ke Google Sheet.');
+    showToast('✅ Webhook Google Apps Script merespons.');
   } else {
-    alert('Gagal mengirim ke Google Sheet: ' + (res?.message || 'Periksa URL Webhook'));
+    alert('Gagal mengirim ke Google Sheet: ' + (res?.error || 'Periksa URL Webhook'));
   }
 }
 
 async function triggerBulkSheetSync() {
   showToast('⏳ Menyinkronkan semua riwayat ke Google Sheet...');
-  const res = await apiPost('/api/sheets/sync-all', {});
+  const res = await apiPost('/api/sync-sheets', {});
   if (res && (res.status === 'ok' || res.status === 'success')) {
     showToast(`✅ Berhasil menyinkronkan ${res.synced_count ?? ''} pertandingan ke Google Sheet!`);
   } else {
-    alert(res?.message || 'Gagal sinkronisasi. Pastikan URL Google Sheet sudah diisi di tab Pengaturan.');
+    alert(res?.error || 'Gagal sinkronisasi. Pastikan URL Google Sheet sudah diisi di tab Pengaturan.');
   }
 }
 
@@ -3770,11 +3283,8 @@ async function downloadExcelReport() {
 
   try {
     showToast('📊 Menyiapkan file Laporan Lengkap Excel (.xlsx)...');
-    const [matches, players, tournaments] = await Promise.all([
-      apiGet('/api/matches'),
-      apiGet('/api/players'),
-      apiGet('/api/tournaments')
-    ]);
+    if (!await fetchBootstrapData()) throw new Error('Database bersama tidak terjangkau.');
+    const { matches, tournaments } = AppState;
 
     const wb = window.XLSX.utils.book_new();
 
