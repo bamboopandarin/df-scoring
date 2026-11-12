@@ -120,7 +120,7 @@ Selamat bertanding! 🎾🏆
 
 - Admin masuk memakai password admin yang sudah ada. Semua member wajib melalui Google dengan akun Gmail. Pendaftaran Google pertama menampilkan **Create Password** (minimal 8 karakter); password ini tidak mengaktifkan login tanpa Google. Sesi member login email lama otomatis tidak berlaku.
 - Hanya admin dapat menambah, mengedit, atau menghapus profil pemain.
-- Admin/member dapat membuat turnamen, dengan **Create Password Turnamen** wajib. Member memasukkan password melalui tombol **Wasit** sebelum mengubah bagan, memulai, membatalkan, mencatat skor, atau memberikan W.O. Admin tetap dapat mengawasi seluruh pertandingan. Admin dapat mengatur password turnamen lama atau menggantinya; perubahan password mencabut akses wasit sebelumnya.
+- Admin/member dapat membuat turnamen, dengan **Create Password Turnamen** wajib. Member memasukkan password saat **Mainkan Skor** atau **Masuk sebagai Wasit** pada match yang dipilih. Akses hanya berlaku untuk match tersebut dan berakhir saat selesai/dibatalkan; match lain memerlukan password lagi. Hanya admin dapat mengubah susunan bagan. Admin tetap dapat mengawasi seluruh pertandingan. Admin dapat mengatur password turnamen lama atau menggantinya; perubahan password mencabut akses wasit sebelumnya.
 - Sebelum Mainkan Skor, pilih lapangan kosong. Status **ON PLAY**, lapangan, game, dan poin di bagan mengikuti data bersama setiap sekitar 1,5 detik untuk semua perangkat.
 - Tombol **Batalkan Pertandingan & Kosongkan Lapangan** membuang skor aktif dan melepaskan lapangan. Pertandingan kembali dapat dimulai dari bagan.
 - Admin dapat menghapus turnamen dengan pertandingan aktif maupun selesai. Lapangan aktif dibebaskan; riwayat hasil dan statistik tetap tersimpan.
@@ -133,3 +133,14 @@ Selamat bertanding! 🎾🏆
 Jalankan `node --test tests/*.test.mjs`, lalu `python tools/package_pages.py --check` untuk memeriksa Worker dari ZIP yang benar-benar akan diunggah. Paketnya adalah `dfscoring123-static-deploy.zip` di folder repositori. Untuk Direct Upload di Cloudflare Pages, unggah ZIP ini ke project **dfscoring123**, pertahankan binding D1 **DF_SCORING_DB**, secret **DF_ADMIN_PASSWORD**, dan konfigurasi **GOOGLE_CLIENT_ID** yang sudah ada. Tabel akses wasit dan snapshot lanjut pertandingan dibuat otomatis tanpa menghapus data lama.
 
 **Syarat sebelum production:** GOOGLE_CLIENT_ID harus sudah aktif (atau diisi melalui Google Sheet & Setup oleh admin). Tambahkan origin production yang dipakai ke Google OAuth Authorized JavaScript Origins. Tanpa konfigurasi ini, member tidak dapat masuk karena login tanpa Google sudah dihapus. Jangan mengganti database D1 atau memulihkan data contoh ketika mengunggah pembaruan.
+
+
+### Perbaikan lanjutan: login Google dan wasit per match
+
+Mode `redirect: "error"` tidak didukung Cloudflare Workers dan menyebabkan pengambilan kunci Google gagal sebelum request dikirim. Verifikasi sekarang memakai `manual`, retry ketika layanan kunci bermasalah, dan refresh saat `kid` Google berganti. Tetap memeriksa signature, issuer, audience, expiry, dan email terverifikasi. Referensi: https://developers.cloudflare.com/workers/runtime-apis/request/ dan https://developers.google.com/identity/gsi/web/guides/verify-google-id-token .
+
+Akses wasit lama yang berlaku untuk seluruh turnamen tidak lagi dipakai. Member memilih match, memasukkan password turnamen, lalu memilih lapangan. Untuk match yang sedang berlangsung, tombol Mainkan Skor tetap meminta password bagi member yang belum menjadi wasit match itu. Akun admin memiliki akses pengawasan.
+
+Kartu match selesai di bagan gugur dan round robin memiliki tombol **Ulangi Pertandingan** dengan password turnamen, termasuk hasil normal dan W.O. Skor baru mulai dari nol; hasil lama diberi status arsip `replayed` dan dikeluarkan dari statistik. Babak selanjutnya yang sudah berjalan/selesai tetap dilindungi dari perubahan hasil sebelumnya.
+
+Foto pemain di papan skor menjadi tombol pemutar slogan khusus admin/wasit match tersebut. Untuk ganda, masing-masing foto memutar slogan pemainnya sendiri. Profil terbaru dipakai agar rekaman tidak hilang akibat data match yang diringkas. Tap manual tetap memutar slogan saat pengumuman otomatis dimatikan.

@@ -317,6 +317,19 @@ class SoundEngine {
     }
   }
 
+  playPlayerSloganNow(player) {
+    if (!player) return;
+    // A deliberate tap should play even when automatic score announcements are muted.
+    const enabled = this.soundEnabled;
+    this.soundEnabled = true;
+    try {
+      if (this.speakTimeout) clearTimeout(this.speakTimeout);
+      this.synth?.cancel();
+      if (player.slogan_audio_url) this.playAudioUrl(player.slogan_audio_url);
+      else if (player.slogan_text) this.speak(player.slogan_text, 0);
+    } finally { this.soundEnabled = enabled; }
+  }
+
   playVictorySlogan(player, fallbackTeamName) {
     if (!this.soundEnabled || !player) return;
 

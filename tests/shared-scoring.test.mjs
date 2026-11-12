@@ -205,13 +205,19 @@ test('Google verifies the issuer, audience, expiry, email and signature and reus
   const publicKey = await crypto.subtle.exportKey('jwk', keys.publicKey);
   const fetchOriginal = globalThis.fetch;
   t.after(() => { globalThis.fetch = fetchOriginal; });
-  globalThis.fetch = async url => {
+  let keyId = 'test-key';
+  let failures = 1;
+  let keyRequests = 0;
+  globalThis.fetch = async (url, options) => {
+    assert.equal(options.redirect, 'manual', 'Workers rejects the error redirect mode before sending a request');
+    keyRequests++;
+    if (failures-- > 0) throw new Error('temporary key service outage');
     assert.equal(url, 'https://www.googleapis.com/oauth2/v3/certs');
-    return Response.json({ keys: [{ ...publicKey, kid: 'test-key' }] }, { headers: { 'Cache-Control': 'max-age=60' } });
+    return Response.json({ keys: [{ ...publicKey, kid: keyId }] }, { headers: { 'Cache-Control': 'max-age=60' } });
   };
   const now = Math.floor(Date.now() / 1000);
   async function token(overrides = {}, corrupt = false) {
-    const head = Buffer.from(JSON.stringify({ alg: 'RS256', kid: 'test-key' })).toString('base64url');
+    const head = Buffer.from(JSON.stringify({ alg: 'RS256', kid: keyId })).toString('base64url');
     const payload = Buffer.from(JSON.stringify({
       iss: 'https://accounts.google.com', aud: clientId, sub: 'stable-google-subject',
       iat: now, exp: now + 3600, email_verified: true, email: 'google@gmail.com',
@@ -241,6 +247,10 @@ test('Google verifies the issuer, audience, expiry, email and signature and reus
   assert.equal(again.user.id, first.user.id);
   assert.equal(again.user.name, 'Updated');
   assert.equal((await api('admin/backup')).statusCode, 403);
+  assert.equal(keyRequests, 2, 'retry temporary key fetch failure and reuse cache');
+  keyId = 'rotated-key';
+  assert.equal((await api('auth/google', 'POST', { credential: await token() })).statusCode, 200);
+  assert.equal(keyRequests, 3, 'refresh cached keys for a newly rotated kid');
 });
 
 test('admin can manage shared players, verify Sheets, export and restore data', async t => {

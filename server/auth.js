@@ -10,6 +10,7 @@ const DB_SCHEMA = [
   "CREATE INDEX IF NOT EXISTS df_auth_attempts_by_expiry ON df_auth_attempts(expires)",
   "CREATE TABLE IF NOT EXISTS df_tournament_access (tournament_id TEXT PRIMARY KEY, salt TEXT NOT NULL, password_hash TEXT NOT NULL)",
   "CREATE TABLE IF NOT EXISTS df_referee_grants (tournament_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (tournament_id, user_id))",
+  "CREATE TABLE IF NOT EXISTS df_match_referees (tournament_id TEXT NOT NULL, fixture_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (tournament_id, fixture_id, user_id))",
   "CREATE TABLE IF NOT EXISTS df_resume_states (match_id TEXT PRIMARY KEY, state TEXT NOT NULL)"
 ];
 
@@ -17,7 +18,7 @@ const initializedSchemas = new WeakMap();
 
 function ensureSchema(db) {
   if (!initializedSchemas.has(db)) {
-    const initialization = db.prepare("SELECT name FROM sqlite_master WHERE name = 'df_resume_states'")
+    const initialization = db.prepare("SELECT name FROM sqlite_master WHERE name = 'df_match_referees'")
       .first().then(marker => marker || db.batch(DB_SCHEMA.map(sql => db.prepare(sql))))
       .catch(error => {
         initializedSchemas.delete(db);
@@ -95,15 +96,30 @@ async function verifyGoogleCredential(credential, audience) {
     || claims.email_verified !== true || typeof claims.email !== "string"
     || typeof claims.sub !== "string" || !claims.sub || claims.sub.length > 255) return null;
 
-  if (Date.now() >= googleKeys.expires) {
-    const response = await fetch(googlePublicKeysUrl, { redirect: "error", signal: AbortSignal.timeout(5000) });
-    if (!response.ok) throw new Error("Google public keys unavailable");
-    const { keys } = await response.json();
-    const maxAge = Number(response.headers.get("Cache-Control")?.match(/max-age=(\d+)/)?.[1] || 300);
-    googleKeys = { keys, expires: Date.now() + Math.min(maxAge, 3600) * 1000 };
+  let jwk = googleKeys.keys.find(key => key.kid === header.kid && key.kty === "RSA");
+  if (Date.now() >= googleKeys.expires || !jwk) {
+    let lastError;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      try {
+        const response = await fetch(googlePublicKeysUrl, {
+          redirect: "manual", signal: controller.signal, headers: { Accept: "application/json" },
+          cf: { cacheTtl: 3600, cacheEverything: true }
+        });
+        if (!response.ok) throw new Error("Google keys HTTP " + response.status);
+        const { keys } = await response.json();
+        if (!Array.isArray(keys) || !keys.length) throw new Error("Invalid Google key response");
+        const maxAge = Number(response.headers.get("Cache-Control")?.match(/max-age=(\d+)/)?.[1] || 300);
+        googleKeys = { keys, expires: Date.now() + Math.min(maxAge, 3600) * 1000 };
+        lastError = null;
+        break;
+      } catch (error) { lastError = error; }
+      finally { clearTimeout(timer); }
+    }
+    if (lastError) throw lastError;
+    jwk = googleKeys.keys.find(key => key.kid === header.kid && key.kty === "RSA");
   }
-
-  const jwk = googleKeys.keys.find(key => key.kid === header.kid && key.kty === "RSA");
   if (!jwk) return null;
   try {
     const key = await crypto.subtle.importKey("jwk", jwk,

@@ -31,9 +31,9 @@ test('member creates protected tournament; only admin manages players; passwords
  assert.equal((await b('tournaments/'+tournament.id,'PUT',tournament)).code,403);
  assert.equal((await b('matches','POST',{tournament_id:tournament.id,tournament_match_id:match.id,win_type:'walkover',winner:'team_a'})).code,403);
  assert.equal((await a('tournaments/'+tournament.id+'/unlock','POST',{password:randomUUID()})).code,403);
- assert.equal((await a('tournaments/'+tournament.id+'/unlock','POST',{password})).code,200);
- assert((await a('bootstrap')).referee_tournaments.includes(tournament.id));
- assert.deepEqual((await b('bootstrap')).referee_tournaments,[]);
+ assert.equal((await a('tournaments/'+tournament.id+'/unlock','POST',{password,fixture_id:match.id})).code,200);
+ assert((await a('bootstrap')).referee_matches.some(g=>g.tournament_id===tournament.id && g.fixture_id===match.id));
+ assert.deepEqual((await b('bootstrap')).referee_matches,[]);
  const started=await a('courts/court_1/start','POST',launch);assert.equal(started.code,200);
  const active=started.court.active_match;const args={match_id:active.id,version:active.version,action:{type:'point',team:'team_a'},winner:'team_a'};
  for(const action of ['score','finish','cancel'])assert.equal((await b('courts/court_1/'+action,'POST',args)).code,403);
@@ -41,6 +41,8 @@ test('member creates protected tournament; only admin manages players; passwords
  assert(!JSON.stringify(await anon('bootstrap')).includes(password));assert(!JSON.stringify(live).includes('password_hash'));
  assert.equal((await a('courts/court_1/cancel','POST',args)).code,200);
  assert.equal((await anon('courts')).code,200);
+ assert.equal((await a('courts/court_1/start','POST',fixture(tournament,match))).code,403,'cancel revokes fixture access');
+ await a('tournaments/'+tournament.id+'/unlock','POST',{password,fixture_id:match.id});
  const fresh=await a('courts/court_1/start','POST',fixture(tournament,match));assert.equal(fresh.code,200);
  await admin('tournaments/'+tournament.id+'/password','POST',{password:randomUUID()});
  assert.equal((await a('courts/court_1/score','POST',{...args,match_id:fresh.court.active_match.id})).code,403,'changing password revokes old grants');
@@ -108,4 +110,50 @@ test('older manual results can resume without an original snapshot',async t=>{
  assert.equal(resumed.court.active_match.current_set_games.team_a,3);
  assert.equal(resumed.court.active_match.sets_history.length,0);
  assert.equal(resumed.court.active_match.is_completed,false);
+});
+
+
+test('referee grants are per fixture and replay requires password, clears score and counts a replacement result once',async t=>{
+ const {admin,a,b,db}=await setup(t);const password=randomUUID();
+ const tourney=await admin('tournaments','POST',{...draft(),password});const [one,two]=tourney.rounds[0].matches;
+ await db.prepare('INSERT INTO df_referee_grants VALUES (?,?)').bind(tourney.id,(await a('auth/session')).user.id).run();
+ assert.equal((await a('courts/court_1/start','POST',fixture(tourney,one))).code,403,'old tournament grants do not grant match access');
+ assert.equal((await a('tournaments/'+tourney.id+'/unlock','POST',{password})).code,400);
+ await a('tournaments/'+tourney.id+'/unlock','POST',{password,fixture_id:one.id});
+ assert.equal((await a('courts/court_2/start','POST',fixture(tourney,two))).code,403,'unlocking one match cannot unlock another');
+ const started=await a('courts/court_1/start','POST',fixture(tourney,one));let active=started.court.active_match;
+ active=(await a('courts/court_1/score','POST',{match_id:active.id,version:active.version,action:{type:'point',team:'team_a'}})).court.active_match;
+ await a('courts/court_1/finish','POST',{match_id:active.id,version:active.version,winner:'team_a'});
+ assert.deepEqual((await a('bootstrap')).referee_matches,[],'finishing expires match access');
+ const path='tournaments/'+tourney.id+'/replay';
+ assert.equal((await a(path,'POST',{password:'wrong-password',fixture_id:one.id,court_id:'court_2'})).code,403);
+ const replay=await a(path,'POST',{password,fixture_id:one.id,court_id:'court_2'});assert.equal(replay.code,200,JSON.stringify(replay));
+ const current=replay.court.active_match;assert.notEqual(current.id,active.id);assert.equal(current.display_point_a,'0');assert.equal(current.undo_count,0);
+ assert.equal((await b('courts/court_2/score','POST',{match_id:current.id,version:current.version,action:{type:'point',team:'team_b'}})).code,403);
+ assert.equal((await a('courts/court_3/start','POST',fixture(tourney,two))).code,403);
+ assert.equal((await admin('bootstrap')).matches[0].status,'replayed');
+ const concurrent=await a(path,'POST',{password,fixture_id:one.id,court_id:'court_3'});assert.equal(concurrent.code,409);
+ await a('courts/court_2/finish','POST',{match_id:current.id,version:current.version,winner:'team_b'});
+ const after=await admin('bootstrap');assert.equal(after.matches.filter(m=>m.status==='completed').length,1);
+ assert.equal(TournamentManager.findMatch(after.tournaments[0],one.id).winner,'team_b');
+});
+
+
+test('normal completed final and round robin walkover both offer password-protected replay',async t=>{
+ const {admin,a}=await setup(t);const password=randomUUID();
+ for(const format of ['knockout','round_robin']) {
+  const create=format==='knockout'?TournamentManager.createKnockoutTournament: TournamentManager.createRoundRobinTournament;
+  const tournament=await admin('tournaments','POST',{...create.call(TournamentManager,'Replay '+format,'padel','singles',players.slice(0,2),{games_per_set:1,sets_to_win:1}),password});
+  const opening=tournament.rounds[0].matches[0];
+  if(format==='knockout') {
+   let current=(await admin('courts/court_1/start','POST',fixture(tournament,opening))).court.active_match;
+   for(let i=0;i<4;i++)current=(await admin('courts/court_1/score','POST',{match_id:current.id,version:current.version,action:{type:'point',team:'team_a'}})).court.active_match;
+   assert.equal(current.is_completed,true);
+   await admin('courts/court_1/finish','POST',{match_id:current.id,version:current.version});
+  } else await admin('matches','POST',{tournament_id:tournament.id,tournament_match_id:opening.id,win_type:'walkover',winner:'team_a'});
+  const replay=await a('tournaments/'+tournament.id+'/replay','POST',{password,fixture_id:opening.id,court_id:'court_1'});
+  assert.equal(replay.code,200,JSON.stringify(replay));assert.equal(replay.court.active_match.display_point_a,'0');
+  const active=replay.court.active_match;
+  await a('courts/court_1/cancel','POST',{match_id:active.id,version:active.version});
+ }
 });

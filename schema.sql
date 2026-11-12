@@ -49,3 +49,5 @@ CREATE TABLE IF NOT EXISTS df_referee_grants (
 CREATE TABLE IF NOT EXISTS df_resume_states (
   match_id TEXT PRIMARY KEY, state TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS df_match_referees (tournament_id TEXT NOT NULL, fixture_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (tournament_id, fixture_id, user_id));

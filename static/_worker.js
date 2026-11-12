@@ -63,7 +63,7 @@ function publicCourt(court) {
 }
 
 function resumableMatch(match) {
-  return Boolean(match.resumable || (match.win_reason === 'Diselesaikan manual' && match.current_points && match.current_set_games));
+  return match.status === 'completed' && Boolean(match.resumable || (match.win_reason === 'Diselesaikan manual' && match.current_points && match.current_set_games));
 }
 
 function makeStore(db) {
@@ -273,11 +273,11 @@ async function findTournament(store, id) {
   return tournament ? TournamentManager.normalize(tournament) : null;
 }
 
-async function canReferee(store, user, tournamentId) {
+async function canReferee(store, user, tournamentId, fixtureId) {
   if (user?.role === 'admin') return true;
-  if (!user || !tournamentId) return false;
-  return Boolean(await store.db.prepare('SELECT user_id FROM df_referee_grants WHERE tournament_id = ? AND user_id = ?')
-    .bind(tournamentId, user.id).first());
+  if (!user || !tournamentId || !fixtureId) return false;
+  return Boolean(await store.db.prepare('SELECT user_id FROM df_match_referees WHERE tournament_id = ? AND fixture_id = ? AND user_id = ?')
+    .bind(tournamentId, fixtureId, user.id).first());
 }
 
 function refereeDenied() {
@@ -285,7 +285,7 @@ function refereeDenied() {
 }
 
 async function canControlMatch(store, user, match) {
-  return match.tournament_id ? canReferee(store, user, match.tournament_id)
+  return match.tournament_id ? canReferee(store, user, match.tournament_id, match.tournament_match_id)
     : user?.role === 'admin' || Boolean(user && match.referee_user_id === user.id);
 }
 
@@ -399,8 +399,9 @@ async function signIn(context, action) {
     if (auth.verifiedGoogle?.aud !== clientId) {
       try {
         auth.verifiedGoogle = await verifyGoogleCredential(body.credential, clientId);
-      } catch {
-        return jsonResponse({ error: "Google sedang sulit dijangkau. Coba masuk dengan Google kembali." }, 503);
+      } catch (error) {
+        console.error("Google key verification unavailable:", error.name, error.message);
+        return jsonResponse({ error: "Verifikasi Google belum berhasil. Silakan coba tombol Google sekali lagi.", code: "GOOGLE_KEYS_UNAVAILABLE" }, 503);
       }
     }
     if (!auth.verifiedGoogle) return jsonResponse({ error: "Sesi Google tidak valid. Pilih akun Google lagi." }, 401);
@@ -490,10 +491,10 @@ async function handleApi(context) {
         delete state.settings.google_sheet_url;
         delete state.settings.google_sheet_webhook_url;
       }
-      const grants = user ? await store.db.prepare("SELECT tournament_id FROM df_referee_grants WHERE user_id = ?").bind(user.id).all() : { results: [] };
+      const grants = user ? await store.db.prepare("SELECT tournament_id, fixture_id FROM df_match_referees WHERE user_id = ?").bind(user.id).all() : { results: [] };
       return jsonResponse({
         ...state,
-        referee_tournaments: grants.results.map(row => row.tournament_id),
+        referee_matches: grants.results,
         settings: { ...DEFAULT_SETTINGS, ...state.settings, google_client_id: googleClientId(env, state.settings) },
         info: {
           app_name: "DF Scoring PRO",
@@ -705,7 +706,7 @@ async function handleApi(context) {
           body.rules = { ...body.rules, ...tourney.rules, tiebreak_at: tourney.rules?.games_per_set || body.rules.games_per_set };
         }
         const cleanPlayers = players => players.map(player => ({ id: player.id, name: player.name }));
-        if (body.tournament_id && !await canReferee(store, user, body.tournament_id)) return refereeDenied();
+        if (body.tournament_id && !await canReferee(store, user, body.tournament_id, body.tournament_match_id)) return refereeDenied();
         const scorer = new MatchScorer({
           id: body.id, sport: body.sport, mode: body.mode, rules: body.rules,
           team_a_name: body.team_a_name, team_b_name: body.team_b_name,
@@ -725,6 +726,7 @@ async function handleApi(context) {
           return conflict("Skor sudah berubah di perangkat lain. Periksa skor terbaru.");
         }
         if (action === "clear" || action === "cancel") {
+          if (active.tournament_id) store.statements.push(store.db.prepare('DELETE FROM df_match_referees WHERE tournament_id = ? AND fixture_id = ?').bind(active.tournament_id, active.tournament_match_id));
           court.active_match = null;
         } else {
           const scorer = MatchScorer.fromJSON(active);
@@ -746,6 +748,7 @@ async function handleApi(context) {
               .bind(result.id, JSON.stringify({ ...resumeState, referee_user_id: active.referee_user_id })));
             const error = await recordCompletedMatch(store, result);
             if (error) return conflict(error);
+            if (active.tournament_id) store.statements.push(store.db.prepare('DELETE FROM df_match_referees WHERE tournament_id = ? AND fixture_id = ?').bind(active.tournament_id, active.tournament_match_id));
             court.active_match = null;
           } else {
             return jsonResponse({ error: "Aksi lapangan tidak tersedia." }, 404);
@@ -809,7 +812,7 @@ async function handleApi(context) {
           || !["team_a", "team_b"].includes(match.winner)) {
           return jsonResponse({ error: "Selesaikan pertandingan aktif dari papan skor." }, 400);
         }
-        if (!await canReferee(store, user, match.tournament_id)) return refereeDenied();
+        if (!await canReferee(store, user, match.tournament_id, match.tournament_match_id)) return refereeDenied();
         const courts = await readStore(store, "courts", DEFAULT_COURTS);
         if (courts.some(c => sameFixture(c.active_match, match))) {
           return jsonResponse({ error: "Selesaikan pertandingan ini dari papan skor lapangan." }, 409);
@@ -830,8 +833,9 @@ async function handleApi(context) {
         const idx = matches.findIndex(m => m.id === matchId);
         if (idx === -1) return jsonResponse({ error: "Pertandingan tidak ditemukan." }, 404);
         const previous = matches[idx];
-        const tournament = previous.tournament_id && await findTournament(store, previous.tournament_id);
+        const tournament = previous.status !== "replayed" && previous.tournament_id && await findTournament(store, previous.tournament_id);
         if (method === "PUT") {
+          if (previous.status === "replayed") return jsonResponse({ error: "Hasil lama yang sudah diulang disimpan sebagai arsip. Koreksi hasil pertandingan terbaru." }, 409);
           const body = await request.json();
           const updated = { ...previous, ...body, id: matchId };
           if (tournament) {
@@ -864,7 +868,7 @@ async function handleApi(context) {
     if (segments[0] === "tournaments") {
       let tournaments = await readStore(store, "tournaments", []);
 
-      if (segments.length === 3 && ['unlock', 'password'].includes(segments[2]) && method === 'POST') {
+      if (segments.length === 3 && ['unlock', 'password', 'replay'].includes(segments[2]) && method === 'POST') {
         const tournament = tournaments.find(item => item.id === segments[1]);
         if (!tournament) return jsonResponse({ error: 'Turnamen tidak ditemukan.' }, 404);
         if (!await allowAuthAttempt(request, store.db, 'referee:' + user.id)) return jsonResponse({ error: 'Terlalu banyak percobaan. Tunggu 5 menit.' }, 429);
@@ -877,7 +881,7 @@ async function handleApi(context) {
           const salt = randomToken(16);
           store.statements.push(store.db.prepare('INSERT OR REPLACE INTO df_tournament_access VALUES (?, ?, ?)')
             .bind(tournament.id, salt, await hashPassword(body.password, salt)),
-            store.db.prepare('DELETE FROM df_referee_grants WHERE tournament_id = ?').bind(tournament.id));
+            store.db.prepare('DELETE FROM df_match_referees WHERE tournament_id = ?').bind(tournament.id));
           tournament.password_protected = true;
           writeStore(store, 'tournaments', tournaments);
           return jsonResponse({ status: 'success' });
@@ -887,8 +891,40 @@ async function handleApi(context) {
         if (!equalValue(await hashPassword(body.password, secret.salt), secret.password_hash)) {
           return jsonResponse({ error: 'Password turnamen salah.' }, 403);
         }
-        store.statements.push(store.db.prepare('INSERT OR IGNORE INTO df_referee_grants VALUES (?, ?)').bind(tournament.id, user.id));
-        return jsonResponse({ status: 'success', tournament_id: tournament.id });
+        const fixture = TournamentManager.findMatch(TournamentManager.normalize(tournament), body.fixture_id);
+        if (!fixture || fixture.team_a?.is_bye || fixture.team_b?.is_bye) return jsonResponse({ error: 'Pilih match yang ingin Anda wasiti.' }, 400);
+        if (segments[2] === 'replay') {
+          const current = TournamentManager.normalize(tournament);
+          const courts = fixedCourts(await readStore(store, 'courts', DEFAULT_COURTS));
+          const court = courts.find(item => item.id === body.court_id);
+          if (!court || court.active_match || courts.some(item => sameFixture(item.active_match, { tournament_id: tournament.id, tournament_match_id: fixture.id }))) {
+            return jsonResponse({ error: 'Pilih lapangan kosong. Match ini mungkin sudah dimainkan ulang.' }, 409);
+          }
+          if (fixture.status !== 'completed' || !reopenFixture(current, fixture.id, courts)) {
+            return jsonResponse({ error: 'Match tidak dapat diulang karena babak berikutnya sudah dimainkan atau match belum selesai.' }, 409);
+          }
+          const scorer = new MatchScorer({
+            id: 'm_' + crypto.randomUUID(), sport: current.sport, mode: current.mode,
+            rules: { ...current.rules, tiebreak_at: current.rules?.games_per_set || 6 },
+            team_a_name: fixture.team_a.name, team_b_name: fixture.team_b.name,
+            team_a_players: fixture.team_a.players || [fixture.team_a], team_b_players: fixture.team_b.players || [fixture.team_b],
+            tournament_id: current.id, tournament_match_id: fixture.id, tournament_name: current.name,
+            court_id: court.id, scored_by: scoredBy(user)
+          });
+          court.active_match = { ...serializeActive(scorer), referee_user_id: user.id };
+          court.last_updated = nowFormatted();
+          writeStore(store, 'courts', courts);
+          writeStore(store, 'tournaments', tournaments.map(item => item.id === current.id ? current : item));
+          const matches = await readStore(store, 'matches', []);
+          writeStore(store, 'matches', matches.map(match => match.tournament_id === current.id && match.tournament_match_id === fixture.id
+            && match.status === 'completed' ? { ...match, status: 'replayed', resumable: false } : match));
+          await recalculateAllPlayerStats(store);
+          store.statements.push(store.db.prepare('DELETE FROM df_match_referees WHERE tournament_id = ? AND fixture_id = ?').bind(current.id, fixture.id),
+            store.db.prepare('INSERT INTO df_match_referees VALUES (?, ?, ?)').bind(current.id, fixture.id, user.id));
+          return jsonResponse({ status: 'success', court: publicCourt(court) });
+        }
+        store.statements.push(store.db.prepare('INSERT OR IGNORE INTO df_match_referees VALUES (?, ?, ?)').bind(tournament.id, fixture.id, user.id));
+        return jsonResponse({ status: 'success', tournament_id: tournament.id, fixture_id: fixture.id });
       }
 
       if (segments.length === 1 && method === "GET") {
@@ -930,7 +966,7 @@ async function handleApi(context) {
           return jsonResponse({ error: "Selesaikan pertandingan aktif turnamen ini terlebih dahulu." }, 409);
         }
         if (method === "PUT") {
-          if (!await canReferee(store, user, tournId)) return refereeDenied();
+          if (user.role !== "admin") return refereeDenied();
           const data = await request.json();
           const current = tournaments[idx];
           if ((data.revision || 0) !== (current.revision || 0) || TournamentManager.hasResults(current)) {
@@ -953,7 +989,7 @@ async function handleApi(context) {
           writeStore(store, "matches", matches.map(match => match.tournament_id === tournId
             ? { ...match, tournament_id: null, tournament_match_id: null } : match));
           store.statements.push(store.db.prepare("DELETE FROM df_tournament_access WHERE tournament_id = ?").bind(tournId),
-            store.db.prepare("DELETE FROM df_referee_grants WHERE tournament_id = ?").bind(tournId));
+            store.db.prepare("DELETE FROM df_match_referees WHERE tournament_id = ?").bind(tournId));
           tournaments = tournaments.filter(t => t.id !== tournId);
           await writeStore(store, "tournaments", tournaments);
           return jsonResponse({ status: "deleted", id: tournId });

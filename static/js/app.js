@@ -8,13 +8,40 @@ const DEFAULT_COURTS = ['court_1', 'court_2', 'court_3'].map((id, index) => ({
   id, name: `Lapangan ${index + 1}`, active_match: null
 }));
 
-function canRefereeTournament(id) {
-  return AppState.currentUser?.role === 'admin' || Boolean(AppState.currentUser && AppState.refereeTournaments?.includes(id));
+function canRefereeMatch(id, fixtureId) {
+  return AppState.currentUser?.role === 'admin' || Boolean(AppState.currentUser && AppState.refereeMatches?.some(grant => grant.tournament_id === id && grant.fixture_id === fixtureId));
+}
+
+function replayButton(tournamentId, fixtureId) {
+  return `<button onclick="replayTournamentMatch(${htmlArgument(tournamentId)}, ${htmlArgument(fixtureId)})" class="w-full py-2 bg-blue-700 rounded-xl text-xs font-bold">↻ Ulangi Pertandingan</button>`;
+}
+
+async function replayTournamentMatch(tournamentId, fixtureId) {
+  if (!AppState.currentUser) return;
+  const password = await requestPassword('Ulangi Pertandingan', 'Masukkan password turnamen. Skor match dimulai dari 0–0; hasil sebelumnya ditandai di riwayat.');
+  if (password === null) return;
+  const courtId = await chooseAvailableCourt();
+  if (!courtId) return;
+  const response = await apiPost(`/api/tournaments/${tournamentId}/replay`, { password, fixture_id: fixtureId, court_id: courtId });
+  if (!response?.court || response.error) return showToast(response?.error || 'Match gagal diulang.');
+  await fetchBootstrapData();
+  document.getElementById('bracket-modal').classList.add('hidden');
+  handleCourtSwitch(courtId); switchTab('scorer');
+  showToast('Pertandingan diulang dari 0–0.');
+}
+
+function playScoringPlayerSlogan(team, index) {
+  if (!canScoreMatch()) return;
+  const player = AppState.scorer?.[team]?.players?.[index];
+  if (!player) return;
+  const profile = AppState.players.find(item => item.id === player.id)
+    || AppState.players.find(item => item.name === player.name) || player;
+  window.soundEngine.playPlayerSloganNow(profile);
 }
 
 function canScoreMatch(match = AppState.courts.find(court => court.id === AppState.currentCourtId)?.active_match) {
   if (!match || !AppState.currentUser) return false;
-  return match.tournament_id ? canRefereeTournament(match.tournament_id)
+  return match.tournament_id ? canRefereeMatch(match.tournament_id, match.tournament_match_id)
     : AppState.currentUser.role === 'admin' || match.referee_user_id === AppState.currentUser.id;
 }
 
@@ -75,21 +102,21 @@ async function chooseAvailableCourt() {
   });
 }
 
-async function ensureReferee(id) {
-  if (canRefereeTournament(id)) return true;
+async function ensureReferee(id, fixtureId) {
+  if (canRefereeMatch(id, fixtureId)) return true;
   if (!AppState.currentUser) { document.getElementById('auth-gate-modal').classList.remove('hidden'); return false; }
-  const password = await requestPassword('Password Turnamen', 'Masukkan password turnamen untuk menjadi wasit.');
+  const password = await requestPassword('Password Turnamen', 'Masukkan password turnamen untuk menjadi wasit pada match ini saja.');
   if (password === null) return false;
-  const response = await apiPost(`/api/tournaments/${id}/unlock`, { password });
+  const response = await apiPost(`/api/tournaments/${id}/unlock`, { password, fixture_id: fixtureId });
   if (response?.status !== 'success') { showToast(response?.error || 'Gagal membuka akses wasit.'); return false; }
   await fetchBootstrapData(); syncAccessUI();
-  showToast('Akses wasit aktif untuk turnamen ini.');
+  showToast('Akses wasit aktif untuk match ini.');
   return true;
 }
 
 function unlockCurrentMatch() {
   const active = AppState.courts.find(court => court.id === AppState.currentCourtId)?.active_match;
-  if (active?.tournament_id) return ensureReferee(active.tournament_id);
+  if (active?.tournament_id) return ensureReferee(active.tournament_id, active.tournament_match_id);
 }
 
 async function setTournamentPassword() {
@@ -111,7 +138,7 @@ async function cancelCurrentMatch() {
 async function resumeMatch(id) {
   const match = AppState.matches.find(item => item.id === id);
   if (!match) return;
-  if (match.tournament_id && !await ensureReferee(match.tournament_id)) return;
+  if (match.tournament_id && !await ensureReferee(match.tournament_id, match.tournament_match_id)) return;
   const courtId = await chooseAvailableCourt();
   if (!courtId) return;
   const response = await apiPost(`/api/matches/${id}/resume`, { court_id: courtId });
@@ -243,7 +270,7 @@ async function fetchBootstrapData() {
       AppState.tournaments = data.tournaments;
       AppState.matches = data.matches;
       AppState.users = data.users;
-      AppState.refereeTournaments = data.referee_tournaments || [];
+      AppState.refereeMatches = data.referee_matches || [];
       syncAccessUI();
       window.soundEngine.setVoiceLang(data.settings.voice_lang || 'id-ID');
       const localSound = localStorage.getItem('df_sound_enabled');
@@ -592,7 +619,7 @@ async function handleLogout() {
     return;
   }
   AppState.currentUser = null;
-  AppState.refereeTournaments = [];
+  AppState.refereeMatches = [];
   syncAccessUI();
   AppState.users = [];
   switchTab('scorer');
@@ -1228,7 +1255,7 @@ function renderTeamScoreHeader(teamKey, teamObj, isServingTeam, isDoubles, activ
 
   // Compute state hash so we DON'T destroy and recreate <img> tags on every point tap!
   const pNames = (teamObj.players || []).map(p => `${p.id || ''}:${p.name || ''}`).join('|');
-  const currentHash = `${teamObj.name}_${isDoubles}_${isServingTeam}_${activePlayerIdx}_${pNames}`;
+  const currentHash = `${teamObj.name}_${isDoubles}_${isServingTeam}_${activePlayerIdx}_${pNames}_${canScoreMatch()}`;
   const hashKey = teamKey === 'a' ? 'lastHeaderHashA' : 'lastHeaderHashB';
 
   if (!forceRebuild && AppState[hashKey] === currentHash) {
@@ -1237,25 +1264,11 @@ function renderTeamScoreHeader(teamKey, teamObj, isServingTeam, isDoubles, activ
   AppState[hashKey] = currentHash;
 
   if (avatarsWrap) {
-    if (isDoubles && teamObj.players && teamObj.players.length >= 2) {
-      const p1 = teamObj.players[0];
-      const p2 = teamObj.players[1];
-      const img1 = resolvePlayerPhoto(p1, 'P1');
-      const img2 = resolvePlayerPhoto(p2, 'P2');
-
-      avatarsWrap.innerHTML = `
-        <div class="doubles-avatar-wrap">
-          <img src="${escapeHTML(img1)}" class="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl object-cover border-2 ${teamKey === 'a' ? 'border-emerald-500' : 'border-amber-500'} shadow-md">
-          <img src="${escapeHTML(img2)}" class="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl object-cover border-2 ${teamKey === 'a' ? 'border-emerald-400' : 'border-amber-400'} shadow-md">
-        </div>
-      `;
-    } else {
-      const p = (teamObj.players && teamObj.players[0]) || { name: teamObj.name, photo_url: teamObj.photo };
-      const img = resolvePlayerPhoto(p, teamObj.name);
-      avatarsWrap.innerHTML = `
-        <img src="${escapeHTML(img)}" class="w-12 h-12 sm:w-15 sm:h-15 rounded-2xl object-cover border-2 ${teamKey === 'a' ? 'border-emerald-500/50' : 'border-amber-500/50'} shadow-md">
-      `;
-    }
+    const players = isDoubles ? teamObj.players.slice(0, 2) : [teamObj.players[0] || { name: teamObj.name }];
+    avatarsWrap.innerHTML = players.map((player, index) => `<button type="button" class="player-slogan-photo" data-slogan-team="team_${teamKey}" data-slogan-index="${index}" title="${escapeHTML('Putar slogan ' + player.name)}" aria-label="${escapeHTML('Putar slogan ' + player.name)}" ${canScoreMatch() ? '' : 'disabled'}><img src="${escapeHTML(resolvePlayerPhoto(player, player.name))}" class="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl object-cover border-2 border-emerald-500/50" alt="${escapeHTML(player.name)}"></button>`).join('');
+    avatarsWrap.querySelectorAll('[data-slogan-team]').forEach(button => {
+      button.onclick = () => playScoringPlayerSlogan(button.dataset.sloganTeam, Number(button.dataset.sloganIndex));
+    });
   }
 
   if (chipsWrap) {
@@ -1693,7 +1706,7 @@ function renderAdminKpiCards() {
   const kpiGrid = document.getElementById('admin-kpi-grid');
   if (!kpiGrid) return;
 
-  const matches = AppState.matches || [];
+  const matches = (AppState.matches || []).filter(match => match.status === 'completed');
   const players = AppState.players || [];
   const courts = AppState.courts || [];
   const tournaments = AppState.tournaments || [];
@@ -1798,7 +1811,7 @@ async function handleAdminClearCourt(courtId) {
 }
 
 function renderAdminVisualAnalytics() {
-  const matches = AppState.matches || [];
+  const matches = (AppState.matches || []).filter(match => match.status === 'completed');
   const total = matches.length || 1;
 
   const padelCount = matches.filter(m => (m.sport || 'padel').toLowerCase() === 'padel').length;
@@ -2054,8 +2067,8 @@ function renderAdminMatchesExplorer() {
 
   container.innerHTML = filtered.map(m => {
     const setsStr = (m.sets_history || []).map(s => `${s.team_a}-${s.team_b}`).join(' | ');
-    const winA = m.winner === 'team_a';
-    const winB = m.winner === 'team_b';
+    const winA = m.status !== 'replayed' && m.winner === 'team_a';
+    const winB = m.status !== 'replayed' && m.winner === 'team_b';
     const isDoubles = m.mode === 'doubles';
     const courtName = getCourtDisplayName(m.court_id || 'court_1');
     const refName = m.scored_by?.name || 'Wasit';
@@ -2069,6 +2082,7 @@ function renderAdminMatchesExplorer() {
             <span class="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded font-bold uppercase">${escapeHTML(m.sport || 'PADEL')}</span>
             <span class="px-2 py-0.5 bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 rounded font-bold uppercase">${isDoubles ? '👥 2v2' : '👤 1v1'}</span>
             <span class="px-2 py-0.5 bg-slate-800 text-slate-300 rounded font-semibold">🏟️ ${escapeHTML(courtName)}</span>
+            ${m.status === 'replayed' ? '<span class="text-amber-300 font-bold">Hasil lama · pertandingan diulang</span>' : ''}
             ${m.win_type && m.win_type !== 'normal' ? `<span class="px-2 py-0.5 bg-red-500/20 text-red-300 border border-red-500/40 rounded font-bold">${escapeHTML(m.win_reason || 'W.O. / DQ')}</span>` : ''}
             <span class="text-slate-400">📅 ${escapeHTML(dateStr)}</span>
             <span class="text-slate-400">⏱️ ${escapeHTML(m.duration_minutes || 1)}m</span>
@@ -2658,7 +2672,7 @@ function viewTournamentBracket(tourneyId) {
   }
 
   document.getElementById('bracket-swap-button').classList.toggle('hidden',
-    tourney.format !== 'knockout' || TournamentManager.hasResults(tourney) || !canRefereeTournament(tourney.id));
+    tourney.format !== 'knockout' || TournamentManager.hasResults(tourney) || AppState.currentUser?.role !== 'admin');
   document.getElementById('bracket-password-button').classList.toggle('hidden', AppState.currentUser?.role !== 'admin');
   if (tourney.champion_name) subEl.textContent += ` • Juara: ${tourney.champion_name}`;
   if (modal) modal.classList.remove('hidden');
@@ -2729,6 +2743,7 @@ function renderKnockoutTree(tourney) {
 
               ${m.score_display && m.score_display !== 'vs' ? `<div class="text-center text-xs font-mono text-amber-400 bg-slate-900 py-1 rounded-lg">${escapeHTML(m.score_display)}</div>` : ''}
 
+              ${m.status === 'completed' && pA && pB && !pA.is_bye && !pB.is_bye ? replayButton(tourney.id, m.id) : ''}
               ${isReady ? `
                 <div class="grid grid-cols-3 gap-1.5 mt-1">
                   <button onclick="startTournamentMatch(${htmlArgument(tourney.id)}, ${htmlArgument(m.id)})" class="col-span-2 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs transition shadow">
@@ -2818,6 +2833,7 @@ function renderRoundRobinView(tourney) {
               <span class="truncate max-w-[42%] text-right">${escapeHTML(m.team_b.name)}</span>
             </div>
             ${m.score_display && m.score_display !== 'vs' ? `<div class="text-xs font-mono text-center text-emerald-400 bg-slate-900 py-1 rounded">${escapeHTML(m.score_display)}</div>` : ''}
+            ${m.status === 'completed' ? replayButton(tourney.id, m.id) : ''}
             ${m.status !== 'completed' ? `
               <div class="grid grid-cols-3 gap-1.5">
                 <button onclick="startTournamentMatch(${htmlArgument(tourney.id)}, ${htmlArgument(m.id)})" class="col-span-2 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs transition">
@@ -2844,11 +2860,12 @@ async function startTournamentMatch(tourneyId, matchId) {
   const occupied = AppState.courts.find(court => court.active_match?.tournament_id === tourneyId
     && court.active_match.tournament_match_id === matchId);
   if (occupied) {
+    if (!await ensureReferee(tourneyId, matchId)) return;
     document.getElementById('bracket-modal').classList.add('hidden');
     switchToCourtAndOpenScorer(occupied.id);
     return;
   }
-  if (!await ensureReferee(tourneyId)) return;
+  if (!await ensureReferee(tourneyId, matchId)) return;
   const courtId = await chooseAvailableCourt();
   if (!courtId) return;
   const games = tournament.rules?.games_per_set || 6;
@@ -2872,7 +2889,7 @@ async function openBracketWalkoverPrompt(tourneyId, matchId) {
   const tournament = TournamentManager.normalize(data);
   const fixture = TournamentManager.findMatch(tournament, matchId);
   if (!TournamentManager.isPlayable(fixture)) return;
-  if (!await ensureReferee(tourneyId)) return;
+  if (!await ensureReferee(tourneyId, matchId)) return;
   const choice = prompt(`Pilih pemenang W.O. / DQ:
 1. ${fixture.team_a.name}
 2. ${fixture.team_b.name}`);
@@ -2894,7 +2911,7 @@ async function openBracketWalkoverPrompt(tourneyId, matchId) {
 }
 
 function openSwapBracketModal() {
-  if (!canRefereeTournament(AppState.selectedTournament?.id)) return;
+  if (AppState.currentUser?.role !== 'admin') return;
   const tourney = AppState.selectedTournament;
   if (!tourney || tourney.format !== 'knockout') {
     showToast('Fitur tukar slot hanya untuk turnamen Sistem Gugur (Knockout).');
@@ -3276,8 +3293,8 @@ function renderHistoryTab() {
 
   container.innerHTML = AppState.matches.map(m => {
     const setsStr = (m.sets_history || []).map(s => `${s.team_a}-${s.team_b}`).join(' | ');
-    const winA = m.winner === 'team_a';
-    const winB = m.winner === 'team_b';
+    const winA = m.status !== 'replayed' && m.winner === 'team_a';
+    const winB = m.status !== 'replayed' && m.winner === 'team_b';
     const isDoubles = m.mode === 'doubles';
     const courtName = getCourtDisplayName(m.court_id || 'court_1');
     const dateStr = m.created_at || m.date || '';
@@ -3289,6 +3306,7 @@ function renderHistoryTab() {
             <span class="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 rounded font-bold uppercase">${escapeHTML(m.sport || 'PADEL')}</span>
             <span class="px-2 py-0.5 bg-indigo-500/10 text-indigo-300 rounded font-bold uppercase">${isDoubles ? '👥 2v2' : '👤 1v1'}</span>
             <span class="px-2 py-0.5 bg-slate-800 text-slate-300 rounded font-semibold">🏟️ ${escapeHTML(courtName)}</span>
+            ${m.status === 'replayed' ? '<span class="text-amber-300 font-bold">Hasil lama · pertandingan diulang</span>' : ''}
             ${m.win_type && m.win_type !== 'normal' ? `<span class="px-2 py-0.5 bg-red-500/20 text-red-300 border border-red-500/40 rounded font-bold">${escapeHTML(m.win_reason || 'W.O. / DQ')}</span>` : ''}
             <span class="text-slate-500">${escapeHTML(dateStr)}</span>
             <span class="text-slate-500">• ${escapeHTML(m.duration_minutes || 1)} Menit</span>
