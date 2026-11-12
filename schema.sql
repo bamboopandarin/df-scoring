@@ -39,3 +39,13 @@ CREATE TABLE IF NOT EXISTS df_auth_attempts (
 );
 
 CREATE INDEX IF NOT EXISTS df_auth_attempts_by_expiry ON df_auth_attempts(expires);
+
+CREATE TABLE IF NOT EXISTS df_tournament_access (
+  tournament_id TEXT PRIMARY KEY, salt TEXT NOT NULL, password_hash TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS df_referee_grants (
+  tournament_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (tournament_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS df_resume_states (
+  match_id TEXT PRIMARY KEY, state TEXT NOT NULL
+);

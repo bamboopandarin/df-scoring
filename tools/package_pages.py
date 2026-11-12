@@ -38,7 +38,7 @@ if args.check:
         checked_worker.write_bytes(archive.read("_worker.js"))
     try:
         result = subprocess.run(
-            ["node", "--test", "tests/shared-scoring.test.mjs"],
+            ["node", "--test", "tests/shared-scoring.test.mjs", "tests/tournament-access.test.mjs"],
             cwd=root,
             env={**os.environ, "DF_TEST_WORKER_URL": checked_worker.as_uri()},
         )

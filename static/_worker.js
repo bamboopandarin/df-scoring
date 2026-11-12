@@ -62,6 +62,10 @@ function publicCourt(court) {
   };
 }
 
+function resumableMatch(match) {
+  return Boolean(match.resumable || (match.win_reason === 'Diselesaikan manual' && match.current_points && match.current_set_games));
+}
+
 function makeStore(db) {
   return { db, reads: new Map(), writes: new Map(), statements: [], afterCommit: [] };
 }
@@ -269,6 +273,45 @@ async function findTournament(store, id) {
   return tournament ? TournamentManager.normalize(tournament) : null;
 }
 
+async function canReferee(store, user, tournamentId) {
+  if (user?.role === 'admin') return true;
+  if (!user || !tournamentId) return false;
+  return Boolean(await store.db.prepare('SELECT user_id FROM df_referee_grants WHERE tournament_id = ? AND user_id = ?')
+    .bind(tournamentId, user.id).first());
+}
+
+function refereeDenied() {
+  return jsonResponse({ error: 'Hanya admin atau wasit yang memiliki password turnamen dapat mengubah pertandingan.' }, 403);
+}
+
+async function canControlMatch(store, user, match) {
+  return match.tournament_id ? canReferee(store, user, match.tournament_id)
+    : user?.role === 'admin' || Boolean(user && match.referee_user_id === user.id);
+}
+
+// Reopen only the dependent branch; never invalidate a match already played.
+function reopenFixture(tournament, fixtureId, courts) {
+  const fixture = TournamentManager.findMatch(tournament, fixtureId);
+  if (!fixture) return false;
+  const chain = [];
+  let previous = fixture;
+  if (tournament.format === 'knockout') {
+    while (true) {
+      const next = tournament.rounds.flatMap(round => round.matches).find(match => match.feeds_from?.includes(previous.id));
+      if (!next) break;
+      if (next.status === 'completed' || courts.some(court => court.active_match?.tournament_id === tournament.id
+        && court.active_match.tournament_match_id === next.id)) return false;
+      chain.push({ next, previous });
+      previous = next;
+    }
+  }
+  for (const { next, previous } of chain) next[next.feeds_from.indexOf(previous.id) === 0 ? 'team_a' : 'team_b'] = null;
+  Object.assign(fixture, { status: 'pending', winner: null, winner_participant: null, sets_history: [],
+    score_display: 'vs', win_type: null, win_reason: '' });
+  Object.assign(tournament, { status: 'active', champion: null, champion_name: null, revision: (tournament.revision || 0) + 1 });
+  return true;
+}
+
 async function postSheet(url, payload) {
   const destination = new URL(url);
   if (destination.protocol !== "https:" || destination.hostname !== "script.google.com"
@@ -328,8 +371,6 @@ async function recordCompletedMatch(store, match) {
   return null;
 }
 
-const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
 async function signIn(context, action) {
   const { request, env, store, auth } = context;
   const url = new URL(request.url);
@@ -337,7 +378,7 @@ async function signIn(context, action) {
   const courtId = DEFAULT_COURTS.some(court => court.id === body.court_id) ? body.court_id : "court_1";
   const admin = kind === "admin";
   const role = admin ? "admin" : "member";
-  const provider = admin ? "admin_password" : kind === "google" ? "google_oauth" : "email_password";
+  const provider = admin ? "admin_password" : "google_oauth";
   let name, email, picture, login, account;
 
   if (admin) {
@@ -354,48 +395,37 @@ async function signIn(context, action) {
   } else if (kind === "google") {
     const settings = await readStore(store, "settings", DEFAULT_SETTINGS);
     const clientId = googleClientId(env, settings);
-    if (!clientId) return jsonResponse({ error: "Masuk Google belum disiapkan. Gunakan akun email DF Scoring.", code: "GOOGLE_NOT_CONFIGURED" }, 503);
+    if (!clientId) return jsonResponse({ error: "Masuk Google belum disiapkan. Hubungi admin untuk mengaktifkan Google Client ID.", code: "GOOGLE_NOT_CONFIGURED" }, 503);
     if (auth.verifiedGoogle?.aud !== clientId) {
       try {
         auth.verifiedGoogle = await verifyGoogleCredential(body.credential, clientId);
       } catch {
-        return jsonResponse({ error: "Google sedang sulit dijangkau. Coba kembali atau masuk dengan email." }, 503);
+        return jsonResponse({ error: "Google sedang sulit dijangkau. Coba masuk dengan Google kembali." }, 503);
       }
     }
     if (!auth.verifiedGoogle) return jsonResponse({ error: "Sesi Google tidak valid. Pilih akun Google lagi." }, 401);
     const google = auth.verifiedGoogle;
     email = google.email.toLowerCase().slice(0, 254);
+    if (!/@(gmail|googlemail)\.com$/.test(email)) return jsonResponse({ error: "Gunakan akun Gmail untuk menjadi member." }, 403);
     name = typeof google.name === "string" ? google.name.trim().slice(0, 80) : "";
     name ||= email.split("@")[0].slice(0, 80);
     picture = typeof google.picture === "string" && /^https:\/\/[\w.-]+\//.test(google.picture)
       ? google.picture.slice(0, 400) : undefined;
     login = "google:" + google.sub;
   } else {
-    email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
-    const password = typeof body.password === "string" ? body.password : "";
-    if (!emailPattern.test(email) || email.length > 254 || !password || password.length > 128) {
-      return jsonResponse({ error: "Masukkan email dan password akun DF Scoring yang valid." }, 400);
-    }
-    login = "email:" + email;
-    account = await store.db.prepare("SELECT * FROM df_accounts WHERE login = ?").bind(login).first();
-    if (action === "register") {
-      name = typeof body.name === "string" ? body.name.trim().slice(0, 80) : "";
-      if (!name || password.length < 8) return jsonResponse({ error: "Masukkan nama dan password minimal 8 karakter." }, 400);
-      if (account) return jsonResponse({ error: "Email sudah terdaftar. Gunakan tab Masuk." }, 409);
-      auth.salt ||= randomToken(16);
-      auth.passwordHash ||= await hashPassword(password, auth.salt);
-    } else {
-      const salt = account?.salt || "AAAAAAAAAAAAAAAAAAAAAA";
-      auth.passwordHash ||= await hashPassword(password, salt);
-      if (!account?.password_hash || !equalValue(auth.passwordHash, account.password_hash)) {
-        return jsonResponse({ error: "Email atau password salah. Jika belum punya akun, pilih Buat Akun." }, 401);
-      }
-      name = account.name;
-    }
+    return jsonResponse({ error: "Member wajib masuk dengan Google/Gmail." }, 403);
   }
 
   if (kind === "google") {
     account = await store.db.prepare("SELECT * FROM df_accounts WHERE login = ?").bind(login).first();
+    if (!account) {
+      const password = body.password;
+      if (typeof password !== "string" || password.length < 8 || password.length > 128) {
+        return jsonResponse({ requires_password: true, message: "Create Password: buat password akun minimal 8 karakter. Login tetap wajib Google." });
+      }
+      auth.salt ||= randomToken(16);
+      auth.passwordHash ||= await hashPassword(password, auth.salt);
+    }
   }
   const users = await readStore(store, "users", []);
   const previous = admin ? users.find(user => user.role === "admin" && user.name === name)
@@ -414,7 +444,7 @@ async function signIn(context, action) {
   if (!admin && !account) {
     store.statements.push(store.db.prepare(
       "INSERT INTO df_accounts (login, user_id, name, email, salt, password_hash) VALUES (?, ?, ?, ?, ?, ?)"
-    ).bind(login, id, name, email, kind === "email" ? auth.salt : null, kind === "email" ? auth.passwordHash : null));
+    ).bind(login, id, name, email, auth.salt || null, auth.passwordHash || null));
   }
   writeStore(store, "users", [profile, ...users.filter(user => user.id !== id)]);
   const response = jsonResponse({ status: "success", user: profile }, action === "register" ? 201 : 200);
@@ -454,13 +484,16 @@ async function handleApi(context) {
 
     if (segments[0] === "bootstrap" && method === "GET") {
       const state = await snapshot(store.db);
+      state.matches = state.matches.map(match => ({ ...match, resumable: resumableMatch(match) }));
       if (user?.role !== "admin") {
         state.users = [];
         delete state.settings.google_sheet_url;
         delete state.settings.google_sheet_webhook_url;
       }
+      const grants = user ? await store.db.prepare("SELECT tournament_id FROM df_referee_grants WHERE user_id = ?").bind(user.id).all() : { results: [] };
       return jsonResponse({
         ...state,
+        referee_tournaments: grants.results.map(row => row.tournament_id),
         settings: { ...DEFAULT_SETTINGS, ...state.settings, google_client_id: googleClientId(env, state.settings) },
         info: {
           app_name: "DF Scoring PRO",
@@ -492,8 +525,10 @@ async function handleApi(context) {
 
     if (method !== "GET" && !user) return jsonResponse({ error: "Silakan masuk kembali." }, 401);
     const adminOnly = ["admin", "users", "settings", "sync-sheets", "test-sheet-connection"].includes(segments[0])
+      || (["players", "upload-photo", "upload-audio", "upload"].includes(segments[0]) && method !== "GET")
+      || (segments[0] === "tournaments" && method === "DELETE")
       || (segments[0] === "courts" && segments[2] === "clear")
-      || (segments[0] === "matches" && method !== "GET" && segments.length > 1);
+      || (segments[0] === "matches" && ["PUT", "DELETE"].includes(method) && segments.length > 1);
     if (adminOnly && user?.role !== "admin") return jsonResponse({ error: "Akses khusus admin." }, 403);
 
     if (segments[0] === "users") {
@@ -670,6 +705,7 @@ async function handleApi(context) {
           body.rules = { ...body.rules, ...tourney.rules, tiebreak_at: tourney.rules?.games_per_set || body.rules.games_per_set };
         }
         const cleanPlayers = players => players.map(player => ({ id: player.id, name: player.name }));
+        if (body.tournament_id && !await canReferee(store, user, body.tournament_id)) return refereeDenied();
         const scorer = new MatchScorer({
           id: body.id, sport: body.sport, mode: body.mode, rules: body.rules,
           team_a_name: body.team_a_name, team_b_name: body.team_b_name,
@@ -677,8 +713,9 @@ async function handleApi(context) {
           tournament_id: body.tournament_id, tournament_match_id: body.tournament_match_id,
           tournament_name: body.tournament_name, court_id: court.id, scored_by: scoredBy(user)
         });
-        court.active_match = serializeActive(scorer);
+        court.active_match = { ...serializeActive(scorer), referee_user_id: user.id };
       } else {
+        if (active && !await canControlMatch(store, user, active)) return refereeDenied();
         if (action === "finish" && active?.id !== body.match_id) {
           const matches = await readStore(store, "matches", []);
           result = matches.find(match => match.id === body.match_id && match.court_id === court.id);
@@ -687,21 +724,26 @@ async function handleApi(context) {
         if (!active || active.id !== body.match_id || active.version !== body.version) {
           return conflict("Skor sudah berubah di perangkat lain. Periksa skor terbaru.");
         }
-        if (action === "clear") {
+        if (action === "clear" || action === "cancel") {
           court.active_match = null;
         } else {
           const scorer = MatchScorer.fromJSON(active);
           if (action === "score") {
             if (!scorer.applyAction(body.action)) return jsonResponse({ error: "Aksi skor tidak tersedia." }, 400);
             scorer.scored_by = scoredBy(user);
-            court.active_match = serializeActive(scorer);
+            court.active_match = { ...serializeActive(scorer), referee_user_id: active.referee_user_id };
           } else if (action === "finish") {
+            const resumeState = !scorer.is_completed ? serializeActive(scorer) : null;
             if (!scorer.is_completed && !scorer.finishEarly(body.winner)) {
               return jsonResponse({ error: "Pilih pemenang untuk menyelesaikan pertandingan." }, 400);
             }
             scorer.duration_seconds = Math.max(0, Math.floor(((scorer.end_time || new Date()) - scorer.start_time) / 1000));
             scorer.duration_minutes = Math.max(1, Math.round(scorer.duration_seconds / 60));
             result = { ...scorer.toLightJSON(), status: "completed", scored_by: scoredBy(user) };
+            result.referee_user_id = active.referee_user_id;
+            result.resumable = Boolean(resumeState);
+            if (resumeState) store.statements.push(store.db.prepare("INSERT OR REPLACE INTO df_resume_states (match_id, state) VALUES (?, ?)")
+              .bind(result.id, JSON.stringify({ ...resumeState, referee_user_id: active.referee_user_id })));
             const error = await recordCompletedMatch(store, result);
             if (error) return conflict(error);
             court.active_match = null;
@@ -720,6 +762,42 @@ async function handleApi(context) {
     if (segments[0] === "matches") {
       let matches = await readStore(store, "matches", []);
 
+      if (segments.length === 3 && segments[2] === 'resume' && method === 'POST') {
+        const previous = matches.find(match => match.id === segments[1]);
+        if (!previous) return jsonResponse({ error: 'Riwayat tidak ditemukan atau sudah dilanjutkan.' }, 409);
+        if (!await canControlMatch(store, user, previous)) return refereeDenied();
+        const saved = await store.db.prepare('SELECT state FROM df_resume_states WHERE match_id = ?').bind(previous.id).first();
+        if (!resumableMatch(previous)) return jsonResponse({ error: 'Hanya pertandingan yang diselesaikan manual yang dapat dilanjutkan.' }, 400);
+        const body = await request.json();
+        const courts = fixedCourts(await readStore(store, 'courts', DEFAULT_COURTS));
+        const court = courts.find(item => item.id === body.court_id);
+        if (!court || court.active_match) return jsonResponse({ error: 'Pilih lapangan yang masih kosong.' }, 409);
+        if (previous.tournament_id) {
+          const tournaments = await readStore(store, 'tournaments', []);
+          const tournament = await findTournament(store, previous.tournament_id);
+          if (!tournament || courts.some(item => sameFixture(item.active_match, previous))
+            || !reopenFixture(tournament, previous.tournament_match_id, courts)) {
+            return jsonResponse({ error: 'Babak lanjutan sudah dimainkan. Pertandingan ini tidak dapat dibuka kembali.' }, 409);
+          }
+          writeStore(store, 'tournaments', tournaments.map(item => item.id === tournament.id ? tournament : item));
+        }
+        // Older manual results already contain the points and service state.
+        const state = saved ? JSON.parse(saved.state) : {
+          ...previous, status: 'active', is_completed: false, winner: null, end_time: null,
+          win_reason: '', win_type: null, sets_history: (previous.sets_history || []).filter(set => !set.partial), history: [], redoStack: []
+        };
+        delete state.resumable;
+        const elapsed = (previous.duration_seconds || 0) * 1000;
+        court.active_match = { ...state, court_id: court.id, version: Math.max(previous.version || 1, state.version || 1) + 1,
+          start_time: new Date(Date.now() - elapsed).toISOString() };
+        court.last_updated = nowFormatted();
+        writeStore(store, 'courts', courts);
+        writeStore(store, 'matches', matches.filter(match => match.id !== previous.id));
+        store.statements.push(store.db.prepare('DELETE FROM df_resume_states WHERE match_id = ?').bind(previous.id));
+        await recalculateAllPlayerStats(store);
+        return jsonResponse({ court: publicCourt(court) });
+      }
+
       if (segments.length === 1 && method === "GET") {
         return jsonResponse(matches);
       }
@@ -731,6 +809,7 @@ async function handleApi(context) {
           || !["team_a", "team_b"].includes(match.winner)) {
           return jsonResponse({ error: "Selesaikan pertandingan aktif dari papan skor." }, 400);
         }
+        if (!await canReferee(store, user, match.tournament_id)) return refereeDenied();
         const courts = await readStore(store, "courts", DEFAULT_COURTS);
         if (courts.some(c => sameFixture(c.active_match, match))) {
           return jsonResponse({ error: "Selesaikan pertandingan ini dari papan skor lapangan." }, 409);
@@ -785,6 +864,33 @@ async function handleApi(context) {
     if (segments[0] === "tournaments") {
       let tournaments = await readStore(store, "tournaments", []);
 
+      if (segments.length === 3 && ['unlock', 'password'].includes(segments[2]) && method === 'POST') {
+        const tournament = tournaments.find(item => item.id === segments[1]);
+        if (!tournament) return jsonResponse({ error: 'Turnamen tidak ditemukan.' }, 404);
+        if (!await allowAuthAttempt(request, store.db, 'referee:' + user.id)) return jsonResponse({ error: 'Terlalu banyak percobaan. Tunggu 5 menit.' }, 429);
+        const body = await request.json();
+        if (typeof body.password !== 'string' || body.password.length < 8 || body.password.length > 128) {
+          return jsonResponse({ error: 'Password turnamen minimal 8 karakter.' }, 400);
+        }
+        if (segments[2] === 'password') {
+          if (user.role !== 'admin') return refereeDenied();
+          const salt = randomToken(16);
+          store.statements.push(store.db.prepare('INSERT OR REPLACE INTO df_tournament_access VALUES (?, ?, ?)')
+            .bind(tournament.id, salt, await hashPassword(body.password, salt)),
+            store.db.prepare('DELETE FROM df_referee_grants WHERE tournament_id = ?').bind(tournament.id));
+          tournament.password_protected = true;
+          writeStore(store, 'tournaments', tournaments);
+          return jsonResponse({ status: 'success' });
+        }
+        const secret = await store.db.prepare('SELECT salt, password_hash FROM df_tournament_access WHERE tournament_id = ?').bind(tournament.id).first();
+        if (!secret) return jsonResponse({ error: 'Admin perlu mengatur password untuk turnamen lama ini.' }, 409);
+        if (!equalValue(await hashPassword(body.password, secret.salt), secret.password_hash)) {
+          return jsonResponse({ error: 'Password turnamen salah.' }, 403);
+        }
+        store.statements.push(store.db.prepare('INSERT OR IGNORE INTO df_referee_grants VALUES (?, ?)').bind(tournament.id, user.id));
+        return jsonResponse({ status: 'success', tournament_id: tournament.id });
+      }
+
       if (segments.length === 1 && method === "GET") {
         return jsonResponse(tournaments);
       }
@@ -795,9 +901,21 @@ async function handleApi(context) {
           || !Array.isArray(tourney.rounds) || !tourney.rounds.length) {
           return jsonResponse({ error: "Bagan atau jadwal turnamen belum lengkap." }, 400);
         }
+        const password = tourney.password;
+        if (typeof password !== "string" || password.length < 8 || password.length > 128) {
+          return jsonResponse({ error: "Create Password turnamen minimal 8 karakter." }, 400);
+        }
+        delete tourney.password;
+        delete tourney.password_hash;
+        delete tourney.salt;
+        tourney.created_by = user.id;
+        tourney.password_protected = true;
         tourney.revision = 1;
         tourney.id = "tourn_" + shortId();
         tourney.created_at = tourney.created_at || nowFormatted();
+        const salt = randomToken(16);
+        store.statements.push(store.db.prepare("INSERT INTO df_tournament_access VALUES (?, ?, ?)")
+          .bind(tourney.id, salt, await hashPassword(password, salt)));
         tournaments.unshift(tourney);
         await writeStore(store, "tournaments", tournaments);
         return jsonResponse(tourney);
@@ -808,20 +926,34 @@ async function handleApi(context) {
         const idx = tournaments.findIndex(t => t.id === tournId);
         if (idx === -1) return jsonResponse({ error: "Turnamen tidak ditemukan." }, 404);
         const courts = await readStore(store, "courts", DEFAULT_COURTS);
-        if (courts.some(court => court.active_match?.tournament_id === tournId)) {
+        if (method !== "DELETE" && courts.some(court => court.active_match?.tournament_id === tournId)) {
           return jsonResponse({ error: "Selesaikan pertandingan aktif turnamen ini terlebih dahulu." }, 409);
         }
         if (method === "PUT") {
+          if (!await canReferee(store, user, tournId)) return refereeDenied();
           const data = await request.json();
           const current = tournaments[idx];
           if ((data.revision || 0) !== (current.revision || 0) || TournamentManager.hasResults(current)) {
             return jsonResponse({ error: "Bagan telah berubah atau sudah memiliki hasil pertandingan." }, 409);
           }
-          tournaments[idx] = { ...data, id: tournId, revision: (current.revision || 0) + 1 };
+          delete data.password;
+          tournaments[idx] = { ...data, created_by: current.created_by, password_protected: current.password_protected,
+            id: tournId, revision: (current.revision || 0) + 1 };
           await writeStore(store, "tournaments", tournaments);
           return jsonResponse({ status: "updated", tournament: tournaments[idx] });
         }
         if (method === "DELETE") {
+          for (const court of courts) if (court.active_match?.tournament_id === tournId) {
+            court.active_match = null;
+            court.last_updated = nowFormatted();
+          }
+          writeStore(store, "courts", courts);
+          const matches = await readStore(store, "matches", []);
+          // Keep history and statistics; detach it from the deleted bracket.
+          writeStore(store, "matches", matches.map(match => match.tournament_id === tournId
+            ? { ...match, tournament_id: null, tournament_match_id: null } : match));
+          store.statements.push(store.db.prepare("DELETE FROM df_tournament_access WHERE tournament_id = ?").bind(tournId),
+            store.db.prepare("DELETE FROM df_referee_grants WHERE tournament_id = ?").bind(tournId));
           tournaments = tournaments.filter(t => t.id !== tournId);
           await writeStore(store, "tournaments", tournaments);
           return jsonResponse({ status: "deleted", id: tournId });
@@ -956,7 +1088,7 @@ export async function onRequest({ request, env, waitUntil }) {
       const store = makeStore(db);
       const meta = readOnly ? null : await db.prepare(REVISION_SQL).first();
       const response = await handleApi({ request: readOnly ? request : request.clone(), env, store, user, auth });
-      if (!response.ok || !store.writes.size) {
+      if (!response.ok || (!store.writes.size && !store.statements.length)) {
         if (meta) response.headers.set("X-DF-Revision", String(meta.revision));
         return response;
       }

@@ -226,3 +226,17 @@ body.sunlight-mode #score-sets-a,
 body.sunlight-mode #score-sets-b {
   color: #b45309 !important;
 }
+.input-dialog { color: #e2e8f0; background: #0f172a; border: 1px solid #475569; border-radius: 20px; padding: 24px; width: min(420px, calc(100vw - 32px)); }
+.input-dialog::backdrop { background: #000b; backdrop-filter: blur(4px); }
+.input-dialog h2 { font-size: 1.3rem; font-weight: 800; margin-bottom: 12px; }
+.input-dialog p { font-size: .9rem; color: #94a3b8; margin-bottom: 16px; }
+.input-dialog input, .input-dialog select { width: 100%; background: #020617; padding: 12px; border: 1px solid #475569; border-radius: 10px; margin-bottom: 16px; }
+.input-dialog button { padding: 10px 18px; border-radius: 10px; background: #334155; margin-right: 8px; }
+.input-dialog button[type=submit] { background: #047857; }
+[hidden] { display: none !important; }
+.header-handle { display: block; margin: 6px auto -4px; font-size: 11px; color: #94a3b8; padding: 4px 20px; border-radius: 8px; background: #1e293b; }
+#app-header.minimized > :not(#toggle-header) { display: none !important; }
+#app-header.minimized { padding: 4px; }
+#app-header.minimized .header-handle { margin: 0 auto; }
+#bracket-modal > div > div:first-child { flex-wrap: wrap; gap: 12px; }
+#bracket-modal > div > div:first-child > div:last-child { flex-wrap: wrap; gap: 6px; }

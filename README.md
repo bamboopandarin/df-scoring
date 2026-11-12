@@ -80,12 +80,12 @@ Aplikasi ini dibuat khusus untuk menyelesaikan permasalahan mengingat skor atau 
 
 Gunakan `dfscoring123-static-deploy.zip` di project Direct Upload `dfscoring123`. Database `df-scoring` sudah terhubung ke Production melalui binding `DF_SCORING_DB`. Worker membuat tabel yang dibutuhkan saat pertama kali dijalankan. Untuk project baru, buat dan pasang binding D1 yang sama sebelum mengunggah ZIP.
 
-1. Di **Workers & Pages → dfscoring123 → Settings → Production → Variables and secrets**, tambahkan `DF_ADMIN_PASSWORD` dengan tipe **Secret**. Masukkan password bersama untuk semua admin. Admin bisa memakai nama masing-masing. Akun email dan Google bisa masuk setelah database terhubung, meskipun secret admin belum diisi.
+1. Di **Workers & Pages → dfscoring123 → Settings → Production → Variables and secrets**, tambahkan `DF_ADMIN_PASSWORD` dengan tipe **Secret**. Masukkan password bersama untuk semua admin. Admin bisa memakai nama masing-masing. Member hanya dapat masuk melalui Google dengan akun Gmail setelah Google Client ID aktif.
 2. Untuk menyalakan **Masuk Google**, buat OAuth Client ID bertipe **Web application** di Google Auth Platform. Daftarkan `https://dfscoring123.pages.dev` di **Authorized JavaScript origins** dan pilih audience **External**. Login ini hanya meminta `openid`, email, dan profil dasar. Menurut [aturan audience Google](https://support.google.com/cloud/answer/15549945?hl=en), Sign in with Google dengan cakupan dasar ini dapat dipakai tanpa daftar test user meskipun status OAuth masih Testing. Pakai Client ID sebagai variable `GOOGLE_CLIENT_ID` di Cloudflare atau isi **Google OAuth Client ID** di panel Pengaturan. Pengaturan Cloudflare didahulukan jika keduanya diisi. Alur ini hanya menggunakan Client ID.
 3. Buka **Create deployment**, pilih **Production**, lalu unggah ZIP. Untuk deploy lewat Wrangler, gunakan output `static` dan database D1 yang tertera di `wrangler.toml`. Production perlu deployment baru agar binding dan perubahan variable dari dashboard aktif.
-4. Masuk ulang dari dua HP di URL Pages yang sama. Coba daftar dengan email dan password, login admin, serta tombol Google jika Client ID sudah aktif. Buat match di Lapangan 3, ubah skor di satu HP, lalu cek dan selesaikan dari HP lain.
+4. Masuk ulang dari dua HP di URL Pages yang sama. Coba login admin dan login Google memakai Gmail. Akun Google baru diminta membuat password akun. Buat match di Lapangan 3, ubah skor di satu HP, lalu cek dan selesaikan dari HP lain.
 
-Jika deployment lama memakai KV, pasang binding `DF_SCORING_KV` sebelum D1 pertama kali diakses agar pemain, riwayat, turnamen, dan pengaturan yang tersimpan di KV ikut disalin. Data dari cache deployment lama dapat dipulihkan melalui **Backup JSON** versi lama dan **Restore** pada versi baru. Tiga lapangan mulai kosong. Sesi lama memerlukan login ulang. Akun email baru memiliki password tersendiri. Akun yang dulu hanya dibuat dengan mengisi nama dan alamat email perlu mendaftar sekali atau masuk melalui Google.
+Jika deployment lama memakai KV, pasang binding `DF_SCORING_KV` sebelum D1 pertama kali diakses agar pemain, riwayat, turnamen, dan pengaturan yang tersimpan di KV ikut disalin. Data dari cache deployment lama dapat dipulihkan melalui **Backup JSON** versi lama dan **Restore** pada versi baru. Tiga lapangan mulai kosong. Sesi lama memerlukan login ulang. Login email tanpa Google dinonaktifkan. Member lama wajib masuk kembali melalui Google/Gmail.
 
 Referensi [binding Cloudflare D1](https://developers.cloudflare.com/pages/functions/bindings/#d1-databases), [unggah ZIP](https://developers.cloudflare.com/pages/get-started/direct-upload/), dan [penyiapan Google Identity Services](https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid).
 
@@ -93,7 +93,7 @@ Referensi [binding Cloudflare D1](https://developers.cloudflare.com/pages/functi
 
 Gunakan Node.js 24 atau lebih baru. Jalankan `start.bat` atau `python app.py`, lalu buka `http://localhost:8000`. Jika ingin menguji login admin, buat file lokal `.dev.vars` berisi `DF_ADMIN_PASSWORD=PASSWORD_LOKAL_ANDA`. Untuk menguji Google, tambahkan `GOOGLE_CLIENT_ID` dan daftarkan origin lokal pada OAuth client. Untuk menguji dari dua HP di jaringan Wi-Fi yang sama, gunakan alamat IP komputer pada port 8000. Server lokal menjalankan Worker yang sama dengan SQLite di `.wrangler/local-scoring.sqlite` dan mengimpor data lama dari `data/` saat pertama dijalankan.
 
-Jalankan `node --test tests/shared-scoring.test.mjs` untuk memeriksa autentikasi, sinkronisasi dua sesi, konflik skor, penyelesaian match, dan turnamen. Jalankan `python tools/package_pages.py --check` untuk membuat ulang ZIP setelah mengubah source dan menguji Worker yang benar-benar ada di dalam paket.
+Jalankan `node --test tests/*.test.mjs` untuk memeriksa autentikasi, sinkronisasi dua sesi, konflik skor, penyelesaian match, dan turnamen. Jalankan `python tools/package_pages.py --check` untuk membuat ulang ZIP setelah mengubah source dan menguji Worker yang benar-benar ada di dalam paket.
 
 ## 📋 Panduan Menghubungkan ke Google Sheets (1-2 Menit)
 
@@ -114,3 +114,22 @@ Jalankan `node --test tests/shared-scoring.test.mjs` untuk memeriksa autentikasi
 12. Klik tombol **Test Koneksi** untuk memastikan statusnya telah terhubung (*Berhasil*).
 
 Selamat bertanding! 🎾🏆
+
+
+## Pembaruan akses turnamen dan scoring
+
+- Admin masuk memakai password admin yang sudah ada. Semua member wajib melalui Google dengan akun Gmail. Pendaftaran Google pertama menampilkan **Create Password** (minimal 8 karakter); password ini tidak mengaktifkan login tanpa Google. Sesi member login email lama otomatis tidak berlaku.
+- Hanya admin dapat menambah, mengedit, atau menghapus profil pemain.
+- Admin/member dapat membuat turnamen, dengan **Create Password Turnamen** wajib. Member memasukkan password melalui tombol **Wasit** sebelum mengubah bagan, memulai, membatalkan, mencatat skor, atau memberikan W.O. Admin tetap dapat mengawasi seluruh pertandingan. Admin dapat mengatur password turnamen lama atau menggantinya; perubahan password mencabut akses wasit sebelumnya.
+- Sebelum Mainkan Skor, pilih lapangan kosong. Status **ON PLAY**, lapangan, game, dan poin di bagan mengikuti data bersama setiap sekitar 1,5 detik untuk semua perangkat.
+- Tombol **Batalkan Pertandingan & Kosongkan Lapangan** membuang skor aktif dan melepaskan lapangan. Pertandingan kembali dapat dimulai dari bagan.
+- Admin dapat menghapus turnamen dengan pertandingan aktif maupun selesai. Lapangan aktif dibebaskan; riwayat hasil dan statistik tetap tersimpan.
+- **Download Bagan** menghasilkan HTML mandiri: cari peserta, buka/tutup kartu match, lihat skor/pemenang/klasemen, dan cetak atau simpan PDF. Berkas merupakan snapshot waktu unduh, bukan koneksi live.
+- Navigasi atas dapat di-minimize/maximize; pilihan tersimpan pada perangkat.
+- Pertandingan yang diselesaikan manual tersimpan di Riwayat dengan tombol **Lanjutkan** untuk wasit/admin. Pilih lapangan kosong untuk mengembalikan poin, game, servis, dan undo. Hasil sementara ditarik dari statistik dan bagan sampai selesai lagi. Untuk menjaga hasil babak berikutnya, pertandingan gugur tidak dapat dibuka kembali bila match yang bergantung padanya sudah dimulai/selesai. Hasil manual lama dapat dilanjutkan jika detail skor masih tersimpan; riwayat undo lama tidak dapat dipulihkan.
+
+### Pemeriksaan dan deployment Cloudflare Pages
+
+Jalankan `node --test tests/*.test.mjs`, lalu `python tools/package_pages.py --check` untuk memeriksa Worker dari ZIP yang benar-benar akan diunggah. Paketnya adalah `dfscoring123-static-deploy.zip` di folder repositori. Untuk Direct Upload di Cloudflare Pages, unggah ZIP ini ke project **dfscoring123**, pertahankan binding D1 **DF_SCORING_DB**, secret **DF_ADMIN_PASSWORD**, dan konfigurasi **GOOGLE_CLIENT_ID** yang sudah ada. Tabel akses wasit dan snapshot lanjut pertandingan dibuat otomatis tanpa menghapus data lama.
+
+**Syarat sebelum production:** GOOGLE_CLIENT_ID harus sudah aktif (atau diisi melalui Google Sheet & Setup oleh admin). Tambahkan origin production yang dipakai ke Google OAuth Authorized JavaScript Origins. Tanpa konfigurasi ini, member tidak dapat masuk karena login tanpa Google sudah dihapus. Jangan mengganti database D1 atau memulihkan data contoh ketika mengunggah pembaruan.

@@ -7,14 +7,17 @@ const DB_SCHEMA = [
   "CREATE INDEX IF NOT EXISTS df_sessions_by_user ON df_sessions(user_id)",
   "CREATE INDEX IF NOT EXISTS df_sessions_by_expiry ON df_sessions(expires)",
   "CREATE TABLE IF NOT EXISTS df_auth_attempts (bucket TEXT PRIMARY KEY, hits INTEGER NOT NULL, expires INTEGER NOT NULL)",
-  "CREATE INDEX IF NOT EXISTS df_auth_attempts_by_expiry ON df_auth_attempts(expires)"
+  "CREATE INDEX IF NOT EXISTS df_auth_attempts_by_expiry ON df_auth_attempts(expires)",
+  "CREATE TABLE IF NOT EXISTS df_tournament_access (tournament_id TEXT PRIMARY KEY, salt TEXT NOT NULL, password_hash TEXT NOT NULL)",
+  "CREATE TABLE IF NOT EXISTS df_referee_grants (tournament_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (tournament_id, user_id))",
+  "CREATE TABLE IF NOT EXISTS df_resume_states (match_id TEXT PRIMARY KEY, state TEXT NOT NULL)"
 ];
 
 const initializedSchemas = new WeakMap();
 
 function ensureSchema(db) {
   if (!initializedSchemas.has(db)) {
-    const initialization = db.prepare("SELECT name FROM sqlite_master WHERE name = 'df_auth_attempts_by_expiry'")
+    const initialization = db.prepare("SELECT name FROM sqlite_master WHERE name = 'df_resume_states'")
       .first().then(marker => marker || db.batch(DB_SCHEMA.map(sql => db.prepare(sql))))
       .catch(error => {
         initializedSchemas.delete(db);
@@ -127,7 +130,8 @@ async function authenticatedUser(request, db) {
   if (!token) return null;
   const row = await db.prepare("SELECT profile FROM df_sessions WHERE digest = ? AND expires > ?")
     .bind(await digest(token), Date.now()).first();
-  return row ? JSON.parse(row.profile) : null;
+  const user = row ? JSON.parse(row.profile) : null;
+  return user?.role === 'member' && user.provider !== 'google_oauth' ? null : user;
 }
 
 async function startSession(store, user, url, request) {
@@ -155,7 +159,7 @@ async function allowAuthAttempt(request, db, kind) {
   const now = Date.now();
   const ip = request.headers.get("CF-Connecting-IP") || "local";
   const bucket = await digest(kind + ":" + ip);
-  const maximum = kind === "admin" ? 8 : 60;
+  const maximum = kind === "admin" || kind.startsWith("referee:") ? 8 : 60;
   const [, result] = await db.batch([
     db.prepare("DELETE FROM df_auth_attempts WHERE expires <= ?").bind(now),
     db.prepare(`INSERT INTO df_auth_attempts (bucket, hits, expires) VALUES (?, 1, ?)

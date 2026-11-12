@@ -8,6 +8,158 @@ const DEFAULT_COURTS = ['court_1', 'court_2', 'court_3'].map((id, index) => ({
   id, name: `Lapangan ${index + 1}`, active_match: null
 }));
 
+function canRefereeTournament(id) {
+  return AppState.currentUser?.role === 'admin' || Boolean(AppState.currentUser && AppState.refereeTournaments?.includes(id));
+}
+
+function canScoreMatch(match = AppState.courts.find(court => court.id === AppState.currentCourtId)?.active_match) {
+  if (!match || !AppState.currentUser) return false;
+  return match.tournament_id ? canRefereeTournament(match.tournament_id)
+    : AppState.currentUser.role === 'admin' || match.referee_user_id === AppState.currentUser.id;
+}
+
+function syncAccessUI() {
+  const admin = AppState.currentUser?.role === 'admin';
+  const allowed = canScoreMatch();
+  document.querySelectorAll('[onclick^="openPlayerModal"], [onclick^="editPlayer"], [onclick^="deletePlayer"]').forEach(el => { el.hidden = !admin; });
+  const actions = /^(handlePoint|handleUndo|handleRedo|handleToggleServer|handleSelectDoublesServer|handleToggleGoldenPoint|openQuickTargetGamesModal|openWalkoverModal|handleResetCurrentMatch|showMatchCompletedModal|handleDismissSideSwitch)\(/;
+  document.querySelectorAll('#active-scoreboard button[onclick]').forEach(el => {
+    if (actions.test(el.getAttribute('onclick'))) el.hidden = !allowed;
+  });
+  const active = AppState.courts.find(court => court.id === AppState.currentCourtId)?.active_match;
+  document.getElementById('spectator-label')?.classList.toggle('hidden', !active || allowed);
+  document.getElementById('cancel-match-button')?.classList.toggle('hidden', !active || !allowed);
+  document.getElementById('unlock-referee-button')?.classList.toggle('hidden', !active?.tournament_id || allowed);
+}
+
+// Native dialogs sit above both bracket and swap overlays and keep keyboard focus inside.
+function inputDialog(title, description, makeInput) {
+  return new Promise(resolve => {
+    const dialog = document.createElement('dialog');
+    dialog.className = 'input-dialog';
+    const form = document.createElement('form');
+    const heading = document.createElement('h2');
+    heading.id = 'input-dialog-title'; heading.textContent = title;
+    dialog.setAttribute('aria-labelledby', heading.id);
+    const text = document.createElement('p'); text.textContent = description;
+    const input = makeInput(); input.required = true;
+    input.setAttribute('aria-label', title);
+    const error = document.createElement('p'); error.setAttribute('role', 'alert');
+    const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Batal';
+    const submit = document.createElement('button'); submit.type = 'submit'; submit.textContent = 'Lanjutkan';
+    form.append(heading, text, input, error, cancel, submit); dialog.append(form); document.body.append(dialog);
+    const finish = value => { dialog.close(); dialog.remove(); resolve(value); };
+    cancel.onclick = () => finish(null);
+    dialog.oncancel = event => { event.preventDefault(); finish(null); };
+    form.onsubmit = event => { event.preventDefault(); if (form.reportValidity()) finish(input.value); };
+    dialog.showModal(); input.focus();
+  });
+}
+
+function requestPassword(title, description) {
+  return inputDialog(title, description, () => {
+    const input = document.createElement('input'); input.type = 'password'; input.minLength = 8; input.maxLength = 128;
+    input.autocomplete = title.startsWith('Create') ? 'new-password' : 'current-password';
+    return input;
+  });
+}
+
+async function chooseAvailableCourt() {
+  await pollSharedState();
+  const available = AppState.courts.filter(court => !court.active_match);
+  if (!available.length) { showToast('Semua lapangan sedang dipakai.'); return null; }
+  return inputDialog('Pilih Lapangan', 'Hanya lapangan yang tersedia yang dapat dipilih.', () => {
+    const select = document.createElement('select');
+    available.forEach(court => select.add(new Option(court.name, court.id)));
+    return select;
+  });
+}
+
+async function ensureReferee(id) {
+  if (canRefereeTournament(id)) return true;
+  if (!AppState.currentUser) { document.getElementById('auth-gate-modal').classList.remove('hidden'); return false; }
+  const password = await requestPassword('Password Turnamen', 'Masukkan password turnamen untuk menjadi wasit.');
+  if (password === null) return false;
+  const response = await apiPost(`/api/tournaments/${id}/unlock`, { password });
+  if (response?.status !== 'success') { showToast(response?.error || 'Gagal membuka akses wasit.'); return false; }
+  await fetchBootstrapData(); syncAccessUI();
+  showToast('Akses wasit aktif untuk turnamen ini.');
+  return true;
+}
+
+function unlockCurrentMatch() {
+  const active = AppState.courts.find(court => court.id === AppState.currentCourtId)?.active_match;
+  if (active?.tournament_id) return ensureReferee(active.tournament_id);
+}
+
+async function setTournamentPassword() {
+  const id = AppState.selectedTournament?.id;
+  if (!id || AppState.currentUser?.role !== 'admin') return;
+  const password = await requestPassword('Create Password Turnamen', 'Wasit perlu memasukkan password baru setelah password diganti.');
+  if (password === null) return;
+  const response = await apiPost(`/api/tournaments/${id}/password`, { password });
+  if (response?.error) return showToast(response.error);
+  await fetchBootstrapData(); showToast('Password turnamen disimpan.');
+}
+
+async function cancelCurrentMatch() {
+  const match = AppState.scorer;
+  if (!match || !canScoreMatch() || !confirm('Batalkan pertandingan dan kosongkan lapangan? Skor pertandingan aktif akan dibuang.')) return;
+  await runCourtRequest(match.court_id, 'cancel', { match_id: match.id, version: match.version });
+}
+
+async function resumeMatch(id) {
+  const match = AppState.matches.find(item => item.id === id);
+  if (!match) return;
+  if (match.tournament_id && !await ensureReferee(match.tournament_id)) return;
+  const courtId = await chooseAvailableCourt();
+  if (!courtId) return;
+  const response = await apiPost(`/api/matches/${id}/resume`, { court_id: courtId });
+  if (!response?.court || response.error) return showToast(response?.error || 'Pertandingan gagal dilanjutkan.');
+  await fetchBootstrapData();
+  handleCourtSwitch(courtId); switchTab('scorer');
+  showToast('Pertandingan dilanjutkan dari skor terakhir.');
+}
+
+function applyHeaderState() {
+  const minimized = localStorage.getItem('df_header_minimized') === 'true';
+  document.getElementById('app-header').classList.toggle('minimized', minimized);
+  const button = document.getElementById('toggle-header');
+  button.setAttribute('aria-expanded', String(!minimized));
+  button.setAttribute('aria-label', minimized ? 'Maximize navigasi' : 'Minimize navigasi');
+  button.textContent = minimized ? '⌄ Maximize navigasi' : '⌃ Minimize navigasi';
+}
+
+function toggleHeader() {
+  localStorage.setItem('df_header_minimized', String(!document.getElementById('app-header').classList.contains('minimized')));
+  applyHeaderState();
+}
+
+function tournamentWithLiveScores(tournament) {
+  const copy = structuredClone(tournament);
+  for (const fixture of copy.rounds.flatMap(round => round.matches)) {
+    const court = AppState.courts.find(item => item.active_match?.tournament_id === copy.id
+      && item.active_match.tournament_match_id === fixture.id);
+    if (!court) continue;
+    const match = court.active_match;
+    fixture.status = 'on play';
+    fixture.score_display = [court.name, (match.sets_history || []).map(set => `${set.team_a}-${set.team_b}`).join(' | '), `Game ${match.current_set_games.team_a}-${match.current_set_games.team_b}`, `Poin ${match.display_point_a}-${match.display_point_b}`].filter(Boolean).join(' · ');
+  }
+  return copy;
+}
+
+function downloadTournamentBracket() {
+  if (!AppState.selectedTournament) return;
+  const tournament = tournamentWithLiveScores(AppState.selectedTournament);
+  const standings = tournament.format === 'round_robin' ? `<h2>Klasemen</h2><table><tr><th>Peserta</th><th>Main</th><th>Menang</th><th>Poin</th></tr>${TournamentManager.calculateStandings(tournament).map(row => `<tr><td>${escapeHTML(row.participant.name)}</td><td>${row.played}</td><td>${row.won}</td><td>${row.points}</td></tr>`).join('')}</table>` : '';
+  const rounds = tournament.rounds.map(round => `<section><h2>${escapeHTML(round.name)}</h2>${round.matches.map(match => `<details open data-match><summary>${escapeHTML(match.team_a?.name || 'Menunggu')} vs ${escapeHTML(match.team_b?.name || 'Menunggu')}</summary><p class="status">${escapeHTML(match.status.toUpperCase())}</p><p>${escapeHTML(match.score_display || 'vs')}</p>${match.winner_participant ? `<p class="winner">🏆 ${escapeHTML(match.winner_participant.name)}</p>` : ''}</details>`).join('')}</section>`).join('');
+  const html = `<!doctype html><html lang="id"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(tournament.name)}</title><style>body{font:16px system-ui;background:#0b1220;color:#e2e8f0;max-width:1400px;margin:auto;padding:24px}h1,.winner{color:#34d399}.rounds{display:flex;gap:24px;overflow:auto}section{min-width:290px;flex:1}details{background:#172033;border:1px solid #334155;border-radius:16px;padding:18px;margin:16px 0}summary{cursor:pointer;font-weight:bold}.status{font-size:12px;color:#fbbf24}input,button{padding:12px;border-radius:8px;margin:8px 4px}table{border-collapse:collapse}td,th{padding:10px;border:1px solid #334155}@media print{body{background:white;color:black}button,input{display:none}.rounds{display:block}details{break-inside:avoid;background:white}}</style><h1>${escapeHTML(tournament.name)}</h1><p>Snapshot ${escapeHTML(new Date().toLocaleString('id-ID', {timeZone:'Asia/Jakarta'}))} WIB · Skor saat diunduh; buka aplikasi untuk pembaruan live.</p><p>${escapeHTML(tournament.champion_name ? 'Juara: ' + tournament.champion_name : 'Turnamen berlangsung')}</p><input type="search" aria-label="Cari peserta" placeholder="Cari peserta…" oninput="document.querySelectorAll('[data-match]').forEach(m=>m.hidden=!m.textContent.toLowerCase().includes(this.value.toLowerCase()))"><button onclick="print()">Cetak / Simpan PDF</button>${standings}<div class="rounds">${rounds}</div></html>`;
+  const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
+  const link = document.createElement('a'); link.href = url;
+  link.download = `${tournament.name.replace(/[^\p{L}\p{N}_-]/gu, '_')}-bagan.html`;
+  link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 const AppState = {
   currentTab: 'scorer',
   currentCourtId: DEFAULT_COURTS.some(court => court.id === localStorage.getItem('padel_active_court_id'))
@@ -59,6 +211,7 @@ const AppState = {
 // ============================================================================
 document.addEventListener('DOMContentLoaded', async () => {
   setupNavigation();
+  applyHeaderState();
   populateCourtDropdowns();
   if (localStorage.getItem('sunlight_mode') === 'true') document.body.classList.add('sunlight-mode');
   startMatchTimer();
@@ -90,6 +243,8 @@ async function fetchBootstrapData() {
       AppState.tournaments = data.tournaments;
       AppState.matches = data.matches;
       AppState.users = data.users;
+      AppState.refereeTournaments = data.referee_tournaments || [];
+      syncAccessUI();
       window.soundEngine.setVoiceLang(data.settings.voice_lang || 'id-ID');
       const localSound = localStorage.getItem('df_sound_enabled');
       window.soundEngine.setSoundEnabled(localSound === null ? data.settings.sound_enabled : localSound === 'true');
@@ -248,21 +403,6 @@ function showAuthMessage(id, message = '') {
   element.classList.toggle('hidden', !message);
 }
 
-function setMemberAuthMode(mode) {
-  const registering = mode === 'register';
-  AppState.memberAuthMode = registering ? 'register' : 'login';
-  document.getElementById('member-mode-login').setAttribute('aria-pressed', String(!registering));
-  document.getElementById('member-mode-register').setAttribute('aria-pressed', String(registering));
-  document.getElementById('member-name-field').classList.toggle('hidden', !registering);
-  document.getElementById('member-auth-name').required = registering;
-  const password = document.getElementById('member-auth-password');
-  password.autocomplete = registering ? 'new-password' : 'current-password';
-  password.minLength = registering ? 8 : 1;
-  document.getElementById('member-password-hint').classList.toggle('hidden', !registering);
-  document.getElementById('member-auth-submit').textContent = registering ? 'Daftar dan Masuk tanpa Google' : 'Masuk tanpa Google';
-  showAuthMessage('member-login-error');
-}
-
 function memberLoginOptions() {
   return {
     court_id: document.getElementById('member-login-court').value || AppState.currentCourtId,
@@ -281,7 +421,7 @@ async function initGoogleIdentityClient() {
     container.replaceChildren();
     container.classList.add('hidden');
     status.classList.remove('hidden');
-    status.textContent = 'Masuk Google belum diaktifkan. Anda dapat membuat akun dan masuk dengan email.';
+    status.textContent = 'Masuk Google belum diaktifkan. Hubungi admin untuk menyiapkan Google Client ID.';
     return;
   }
   if (renderedGoogleClientId === clientId) return;
@@ -315,7 +455,7 @@ async function initGoogleIdentityClient() {
     googleScript = null;
     renderedGoogleClientId = '';
     container.classList.add('hidden');
-    status.textContent = 'Tombol Google gagal dimuat. Muat ulang halaman atau masuk dengan email.';
+    status.textContent = 'Tombol Google gagal dimuat. Muat ulang halaman untuk mencoba lagi.';
   }
 }
 
@@ -325,21 +465,6 @@ async function handleGoogleCredentialResponse(response) {
     return;
   }
   await completeUserLogin('google', { ...memberLoginOptions(), credential: response.credential }, 'member-login-error');
-}
-
-async function handleMemberAuth(event) {
-  event.preventDefault();
-  const password = document.getElementById('member-auth-password');
-  const user = await completeUserLogin(AppState.memberAuthMode, {
-    ...memberLoginOptions(),
-    email: document.getElementById('member-auth-email').value.trim(),
-    name: document.getElementById('member-auth-name').value.trim(),
-    password: password.value
-  }, 'member-login-error', event.currentTarget.querySelector('[type="submit"]'));
-  if (user) {
-    password.value = '';
-    setMemberAuthMode('login');
-  }
 }
 
 async function handleAdminLogin(event) {
@@ -361,7 +486,12 @@ async function completeUserLogin(action, payload, feedback, button) {
   if (button) button.disabled = true;
   showAuthMessage(feedback);
   try {
-    const response = await apiPost('/api/auth/' + action, payload);
+    let response = await apiPost('/api/auth/' + action, payload);
+    if (response?.requires_password && action === 'google') {
+      const password = await requestPassword('Create Password', 'Buat password akun minimal 8 karakter. Anda tetap wajib login melalui Google.');
+      if (password === null) return null;
+      response = await apiPost('/api/auth/google', { ...payload, password });
+    }
     if (!response?.user) {
       showAuthMessage(feedback, response?.error || response?.message || 'Koneksi ke server gagal. Coba lagi.');
       return null;
@@ -384,6 +514,7 @@ async function completeUserLogin(action, payload, feedback, button) {
 
 function applyLoggedInUserUI() {
   const u = AppState.currentUser;
+  syncAccessUI();
   if (!u) return;
 
   const avatarEl = document.getElementById('header-user-avatar');
@@ -461,6 +592,8 @@ async function handleLogout() {
     return;
   }
   AppState.currentUser = null;
+  AppState.refereeTournaments = [];
+  syncAccessUI();
   AppState.users = [];
   switchTab('scorer');
   document.getElementById('modal-user-account').classList.add('hidden');
@@ -660,6 +793,7 @@ function renderCourtViews() {
     renderAdminLiveCourts();
   }
   if (!document.getElementById('modal-multi-court').classList.contains('hidden')) renderMultiCourtGrid();
+  if (AppState.selectedTournament && !document.getElementById('bracket-modal').classList.contains('hidden')) renderBracketContent(AppState.selectedTournament);
 }
 
 function applyCourtSnapshot(state) {
@@ -884,6 +1018,7 @@ function triggerDigitPop(el) {
 
 function updateScoreboardUI(forceHeaderRebuild = false) {
   const s = AppState.scorer;
+  syncAccessUI();
   document.getElementById('active-scoreboard').classList.toggle('hidden', !s);
   document.getElementById('empty-court').classList.toggle('hidden', Boolean(s));
   document.getElementById('empty-court-title').textContent = getCourtDisplayName(AppState.currentCourtId);
@@ -1076,6 +1211,7 @@ function updateScoreboardUI(forceHeaderRebuild = false) {
     const activePlayer = s.getActiveServerPlayer();
     serverTextEl.textContent = `Servis: ${activePlayer.name}`;
   }
+  syncAccessUI();
 
 }
 
@@ -1146,7 +1282,7 @@ function renderTeamScoreHeader(teamKey, teamObj, isServingTeam, isDoubles, activ
 // ============================================================================
 async function runScoreAction(action) {
   const scorer = AppState.scorer;
-  if (!scorer || AppState.pendingCourtAction) return;
+  if (!scorer || !canScoreMatch() || AppState.pendingCourtAction) return;
   const response = await runCourtRequest(scorer.court_id, 'score', {
     match_id: scorer.id, version: scorer.version, action
   });
@@ -1244,7 +1380,7 @@ function closeFinishModal() {
 
 function showMatchCompletedModal() {
   const s = AppState.scorer;
-  if (!s || AppState.pendingCourtAction) return;
+  if (!s || !canScoreMatch() || AppState.pendingCourtAction) return;
   AppState.finishContext = { courtId: s.court_id, match_id: s.id, version: s.version };
   const modal = document.getElementById('match-finish-modal');
   const manual = !s.is_completed;
@@ -1955,7 +2091,8 @@ function renderAdminMatchesExplorer() {
           </div>
 
           <div class="flex items-center space-x-1.5">
-            <button onclick="openMatchDetailModal(${htmlArgument(m.id)})" class="px-3 py-2 bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 rounded-xl text-xs font-bold transition">
+            ${m.resumable && canScoreMatch(m) ? `<button onclick="resumeMatch(${htmlArgument(m.id)})" class="p-2 bg-blue-700 rounded-xl text-xs font-bold">▶ Lanjutkan</button>` : ''}
+          <button onclick="openMatchDetailModal(${htmlArgument(m.id)})" class="px-3 py-2 bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 rounded-xl text-xs font-bold transition">
               🔍 Detail / Edit
             </button>
             <button onclick="deleteMatchHistory(${htmlArgument(m.id)})" class="px-2.5 py-2 bg-red-600/15 hover:bg-red-600 text-red-400 hover:text-white border border-red-500/30 rounded-xl text-xs font-bold transition" title="Hapus Match">
@@ -2260,9 +2397,9 @@ function renderTournamentsList() {
           <button onclick="viewTournamentBracket(${htmlArgument(t.id)})" class="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs transition">
             Lihat Bagan / Jadwal
           </button>
-          <button onclick="deleteTournament(${htmlArgument(t.id)})" class="px-3 py-2.5 bg-red-600/20 hover:bg-red-600/40 text-red-400 rounded-xl text-xs font-bold transition">
+          ${AppState.currentUser?.role === 'admin' ? `<button onclick="deleteTournament(${htmlArgument(t.id)})" class="px-3 py-2.5 bg-red-600/20 hover:bg-red-600/40 text-red-400 rounded-xl text-xs font-bold transition">
             🗑️
-          </button>
+          </button>` : ''}
         </div>
       </div>
     `;
@@ -2489,7 +2626,8 @@ async function handleCreateTournament(e) {
   if (submit.disabled) return;
   submit.disabled = true;
   try {
-    const response = await apiPost('/api/tournaments', tournament);
+    const response = await apiPost('/api/tournaments', { ...tournament, password: document.getElementById('tourney-password').value });
+    if (response?.id) document.getElementById('tourney-password').value = '';
     if (!response?.id || response.error) {
       showToast(response?.error || 'Bagan gagal disimpan. Coba lagi.');
       return;
@@ -2520,13 +2658,15 @@ function viewTournamentBracket(tourneyId) {
   }
 
   document.getElementById('bracket-swap-button').classList.toggle('hidden',
-    tourney.format !== 'knockout' || TournamentManager.hasResults(tourney));
+    tourney.format !== 'knockout' || TournamentManager.hasResults(tourney) || !canRefereeTournament(tourney.id));
+  document.getElementById('bracket-password-button').classList.toggle('hidden', AppState.currentUser?.role !== 'admin');
   if (tourney.champion_name) subEl.textContent += ` • Juara: ${tourney.champion_name}`;
   if (modal) modal.classList.remove('hidden');
   renderBracketContent(tourney);
 }
 
 function renderBracketContent(tourney) {
+  tourney = tournamentWithLiveScores(tourney);
   const container = document.getElementById('bracket-visual-container');
   if (!container) return;
 
@@ -2592,9 +2732,9 @@ function renderKnockoutTree(tourney) {
               ${isReady ? `
                 <div class="grid grid-cols-3 gap-1.5 mt-1">
                   <button onclick="startTournamentMatch(${htmlArgument(tourney.id)}, ${htmlArgument(m.id)})" class="col-span-2 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs transition shadow">
-                    ▶ Mainkan Skor
+                    ${m.status === 'on play' ? '👁 Lihat Skor / Wasit' : '▶ Mainkan Skor'}
                   </button>
-                  <button onclick="openBracketWalkoverPrompt(${htmlArgument(tourney.id)}, ${htmlArgument(m.id)})" class="py-2 bg-red-600/20 hover:bg-red-600/40 text-red-300 border border-red-500/30 font-bold rounded-xl text-[11px] transition" title="Menang W.O. / Diskualifikasi">
+                  <button ${m.status === 'on play' ? 'hidden' : ''} onclick="openBracketWalkoverPrompt(${htmlArgument(tourney.id)}, ${htmlArgument(m.id)})" class="py-2 bg-red-600/20 hover:bg-red-600/40 text-red-300 border border-red-500/30 font-bold rounded-xl text-[11px] transition" title="Menang W.O. / Diskualifikasi">
                     🏳️ W.O./DQ
                   </button>
                 </div>
@@ -2681,9 +2821,9 @@ function renderRoundRobinView(tourney) {
             ${m.status !== 'completed' ? `
               <div class="grid grid-cols-3 gap-1.5">
                 <button onclick="startTournamentMatch(${htmlArgument(tourney.id)}, ${htmlArgument(m.id)})" class="col-span-2 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs transition">
-                  ▶ Mainkan
+                  ${m.status === 'on play' ? '👁 Lihat Skor / Wasit' : '▶ Mainkan'}
                 </button>
-                <button onclick="openBracketWalkoverPrompt(${htmlArgument(tourney.id)}, ${htmlArgument(m.id)})" class="py-1.5 bg-red-600/20 hover:bg-red-600/40 text-red-300 border border-red-500/30 font-bold rounded-xl text-[11px] transition">
+                <button ${m.status === 'on play' ? 'hidden' : ''} onclick="openBracketWalkoverPrompt(${htmlArgument(tourney.id)}, ${htmlArgument(m.id)})" class="py-1.5 bg-red-600/20 hover:bg-red-600/40 text-red-300 border border-red-500/30 font-bold rounded-xl text-[11px] transition">
                   🏳️ W.O.
                 </button>
               </div>
@@ -2708,12 +2848,11 @@ async function startTournamentMatch(tourneyId, matchId) {
     switchToCourtAndOpenScorer(occupied.id);
     return;
   }
-  if (AppState.courts.find(court => court.id === AppState.currentCourtId)?.active_match) {
-    showToast('Lapangan ini sedang dipakai. Tutup bagan dan pilih lapangan kosong.');
-    return;
-  }
+  if (!await ensureReferee(tourneyId)) return;
+  const courtId = await chooseAvailableCourt();
+  if (!courtId) return;
   const games = tournament.rules?.games_per_set || 6;
-  const response = await startSharedMatch(AppState.currentCourtId, {
+  const response = await startSharedMatch(courtId, {
     tournament_id: tourneyId, tournament_match_id: matchId,
     sport: tournament.sport || 'padel', mode: tournament.mode || 'singles',
     team_a_name: fixture.team_a.name, team_b_name: fixture.team_b.name,
@@ -2733,6 +2872,7 @@ async function openBracketWalkoverPrompt(tourneyId, matchId) {
   const tournament = TournamentManager.normalize(data);
   const fixture = TournamentManager.findMatch(tournament, matchId);
   if (!TournamentManager.isPlayable(fixture)) return;
+  if (!await ensureReferee(tourneyId)) return;
   const choice = prompt(`Pilih pemenang W.O. / DQ:
 1. ${fixture.team_a.name}
 2. ${fixture.team_b.name}`);
@@ -2754,6 +2894,7 @@ async function openBracketWalkoverPrompt(tourneyId, matchId) {
 }
 
 function openSwapBracketModal() {
+  if (!canRefereeTournament(AppState.selectedTournament?.id)) return;
   const tourney = AppState.selectedTournament;
   if (!tourney || tourney.format !== 'knockout') {
     showToast('Fitur tukar slot hanya untuk turnamen Sistem Gugur (Knockout).');
@@ -2843,7 +2984,8 @@ async function saveBracketChanges(tournament, message) {
 }
 
 async function deleteTournament(id) {
-  if (!confirm('Hapus turnamen ini?')) return;
+  if (AppState.currentUser?.role !== 'admin') return;
+  if (!confirm('Hapus turnamen ini? Lapangan turnamen akan dikosongkan. Riwayat pertandingan tetap disimpan.')) return;
   const response = await apiWrite(`/api/tournaments/${id}`, 'DELETE');
   if (response?.status !== 'deleted') {
     showToast(response?.error || 'Turnamen gagal dihapus.');
@@ -2892,10 +3034,10 @@ function renderPlayersTab() {
           <p class="italic text-amber-300 font-medium">"${escapeHTML(p.slogan_text || 'Belum mengatur teks slogan')}"</p>
         </div>
 
-        <div class="flex space-x-2">
+        ${AppState.currentUser?.role === 'admin' ? `<div class="flex space-x-2">
           <button onclick="editPlayer(${htmlArgument(p.id)})" class="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold transition">✏️ Edit / Rekam Suara</button>
           <button onclick="deletePlayer(${htmlArgument(p.id)})" class="px-3 py-2 bg-red-500/10 hover:bg-red-500/30 text-red-400 rounded-xl text-xs font-bold transition">🗑️</button>
-        </div>
+        </div>` : ''}
       </div>
     `;
   }).join('');
@@ -2907,6 +3049,7 @@ function playPlayerSlogan(id) {
 }
 
 function openPlayerModal(player = null) {
+  if (AppState.currentUser?.role !== 'admin') return;
   document.getElementById('player-form-id').value = player ? player.id : '';
   document.getElementById('player-form-name').value = player ? player.name : '';
   document.getElementById('player-form-nickname').value = player ? (player.nickname || '') : '';
@@ -3160,6 +3303,7 @@ function renderHistoryTab() {
           <div class="px-4 py-2 bg-slate-950 rounded-xl border border-slate-800 font-mono font-extrabold text-base text-white">
             ${escapeHTML(setsStr || '0-0')}
           </div>
+          ${m.resumable && (canScoreMatch(m) || (m.tournament_id && AppState.currentUser)) ? `<button onclick="resumeMatch(${htmlArgument(m.id)})" class="p-2 bg-blue-700 rounded-xl text-xs font-bold">▶ Lanjutkan</button>` : ''}
           <button onclick="openMatchDetailModal(${htmlArgument(m.id)})" class="p-2 text-indigo-400 hover:bg-indigo-500/10 rounded-xl transition text-xs font-bold" title="Detail Match">🔍</button>
           ${AppState.currentUser?.role === 'admin'
             ? `<button onclick="deleteMatchHistory(${htmlArgument(m.id)})" class="p-2 text-slate-500 hover:text-red-400 transition" title="Hapus">🗑️</button>`

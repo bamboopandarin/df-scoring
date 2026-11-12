@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import { TournamentManager } from '../static/js/tournament.js';
 import { localD1 } from '../tools/local-d1.mjs';
+import { ensureSchema, digest, randomToken } from '../server/auth.js';
 
 const { default: worker } = await import(process.env.DF_TEST_WORKER_URL || '../static/_worker.js');
 
@@ -13,8 +14,8 @@ const fixture = (name = 'A') => ({
   team_a_players: [{ id: 'a', name }], team_b_players: [{ id: 'b', name: 'B' }]
 });
 
-function client(env) {
-  let cookie = '';
+function client(env, initialCookie = '') {
+  let cookie = initialCookie;
   return async (path, method = 'GET', body) => {
     const response = await worker.fetch(new Request('https://scoring.test/api/' + path, {
       method, headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: JSON.stringify(body)
@@ -25,6 +26,15 @@ function client(env) {
     }
     return { statusCode: response.status, ...(await response.json()) };
   };
+}
+
+async function googleMember(env, name = 'Member') {
+  await ensureSchema(env.DF_SCORING_DB);
+  const token = randomToken(32);
+  const user = { id: randomUUID(), role: 'member', provider: 'google_oauth', name, email: name + '@gmail.com' };
+  await env.DF_SCORING_DB.prepare('INSERT INTO df_sessions VALUES (?, ?, ?, ?)')
+    .bind(await digest(token), user.id, Date.now() + 86400000, JSON.stringify(user)).run();
+  return client(env, 'df_session_v2=' + token);
 }
 
 test('two admins share all courts, guard stale scores and release a court exactly once', async t => {
@@ -41,7 +51,7 @@ test('two admins share all courts, guard stale scores and release a court exactl
       })[key] ?? null
     }
   };
-  const a = client(env), b = client(env), member = client(env), anonymous = client(env);
+  const a = client(env), b = client(env), member = await googleMember(env), anonymous = client(env);
   assert.equal((await anonymous('admin/backup')).statusCode, 403);
   const first = await a('bootstrap');
   assert.equal(first.courts.length, 3);
@@ -53,10 +63,9 @@ test('two admins share all courts, guard stale scores and release a court exactl
   ]);
   assert(logins.every(login => login.statusCode === 200), JSON.stringify(logins));
   assert.notEqual(logins[0].user.id, logins[1].user.id);
-  assert.equal((await member('auth/register', 'POST', { name: 'Member', email: 'member@example.test', password: randomUUID() })).statusCode, 201);
   assert.equal((await member('admin/backup')).statusCode, 403);
-  assert.equal((await a('bootstrap')).users.length, 3);
-  assert.equal((await b('bootstrap')).users.length, 3);
+  assert.equal((await a('bootstrap')).users.length, 2);
+  assert.equal((await b('bootstrap')).users.length, 2);
   assert.equal((await member('bootstrap')).users.length, 0);
   assert.equal((await anonymous('courts/court_3/start', 'POST', fixture())).statusCode, 401);
 
@@ -108,11 +117,12 @@ test('two admins share all courts, guard stale scores and release a court exactl
 test('knockout byes, doubles round robin, cross-court fixture lock and atomic result', async t => {
   const db = localD1();
   t.after(() => db.close());
-  const api = client({ DF_SCORING_DB: db, DF_ADMIN_PASSWORD: randomUUID() });
-  assert.equal((await api('auth/register', 'POST', { name: 'Wasit', email: 'ref@example.test', password: randomUUID() })).statusCode, 201);
+  const password = randomUUID();
+  const api = client({ DF_SCORING_DB: db, DF_ADMIN_PASSWORD: password });
+  assert.equal((await api('auth/login', 'POST', { role: 'admin', password })).statusCode, 200);
   const players = Array.from({ length: 5 }, (_, index) => ({ id: 'p' + index, name: 'Pemain ' + index }));
   const draft = TournamentManager.createKnockoutTournament('Gugur', 'padel', 'singles', players, games);
-  const tourney = await api('tournaments', 'POST', draft);
+  const tourney = await api('tournaments', 'POST', { ...draft, password: randomUUID() });
   assert.equal(tourney.statusCode, 200);
   const opening = tourney.rounds[0].matches.find(TournamentManager.isPlayable);
   assert(opening);
@@ -149,7 +159,7 @@ test('knockout byes, doubles round robin, cross-court fixture lock and atomic re
     players: [{ id: 'a' + index, name: 'A ' + index }, { id: 'b' + index, name: 'B ' + index }]
   }));
   const robin = await api('tournaments', 'POST',
-    TournamentManager.createRoundRobinTournament('Round Robin', 'tennis', 'doubles', doubles, games));
+    { ...TournamentManager.createRoundRobinTournament('Round Robin', 'tennis', 'doubles', doubles, games), password: randomUUID() });
   assert.equal(robin.statusCode, 200);
   const schedule = robin.rounds.flatMap(round => round.matches);
   assert.equal(schedule.length, 3);
@@ -166,37 +176,22 @@ test('knockout byes, doubles round robin, cross-court fixture lock and atomic re
   assert(rr.champion_name);
 });
 
-test('register and sign in on another device without an admin secret, and revoke old sessions', async t => {
+test('email login and registration are disabled, including old member sessions', async t => {
   const db = localD1(':memory:', { initialize: false });
   t.after(() => db.close());
   const env = { DF_SCORING_DB: db };
-  const a = client(env), b = client(env);
-  assert.equal((await a('bootstrap')).statusCode, 200, 'an empty D1 binding is initialized automatically');
-  assert.equal((await a('auth/login', 'POST', { role: 'admin', password: randomUUID() })).statusCode, 503);
-  assert.equal((await a('auth/google', 'POST', { credential: 'forged' })).statusCode, 503);
-  const email = 'player@example.test';
-  const password = randomUUID();
-  assert.equal((await a('auth/login', 'POST', { name: 'Fake Google', email, provider: 'google' })).statusCode, 400);
-  const outcomes = await Promise.all([
-    a('auth/register', 'POST', { name: 'Player', email: email.toUpperCase(), password, role: 'admin' }),
-    b('auth/register', 'POST', { name: 'Other', email, password })
-  ]);
-  assert.deepEqual(outcomes.map(outcome => outcome.statusCode).sort(), [201, 409]);
-  const created = outcomes.find(outcome => outcome.statusCode === 201).user;
-  assert.equal(created.role, 'member');
-  assert.equal(created.email, email);
-  assert.equal((await b('auth/login', 'POST', { email, password: randomUUID() })).statusCode, 401);
-  const login = await b('auth/login', 'POST', { email, password, name: 'Ignored' });
-  assert.equal(login.statusCode, 200);
-  assert.equal(login.user.id, created.id);
-  assert.equal(login.user.name, created.name);
-  assert.equal((await b('auth/session')).user.id, created.id);
-  assert.equal((await b('auth/logout', 'POST', {})).statusCode, 200);
-  assert.equal((await b('auth/session')).user, null);
-
+  const api = client(env);
+  assert.equal((await api('bootstrap')).statusCode, 200);
+  for (const action of ['login', 'register']) {
+    assert.equal((await api('auth/' + action, 'POST', { email: 'member@gmail.com', password: randomUUID() })).statusCode, 403);
+  }
+  assert.equal((await api('auth/login', 'POST', { role: 'admin', password: randomUUID() })).statusCode, 503);
+  const token = randomToken(32);
+  await db.prepare('INSERT INTO df_sessions VALUES (?, ?, ?, ?)').bind(await digest(token), 'old-member', Date.now()+100000,
+    JSON.stringify({id:'old-member', role:'member', provider:'email_password'})).run();
+  assert.equal((await client(env, 'df_session_v2='+token)('auth/session')).user, null);
   const missing = await worker.fetch(new Request('https://scoring.test/api/bootstrap'), {});
   assert.equal(missing.status, 503);
-  assert.equal((await missing.json()).code, 'DATABASE_NOT_BOUND');
 });
 
 test('Google verifies the issuer, audience, expiry, email and signature and reuses the Google subject', async t => {
@@ -219,7 +214,7 @@ test('Google verifies the issuer, audience, expiry, email and signature and reus
     const head = Buffer.from(JSON.stringify({ alg: 'RS256', kid: 'test-key' })).toString('base64url');
     const payload = Buffer.from(JSON.stringify({
       iss: 'https://accounts.google.com', aud: clientId, sub: 'stable-google-subject',
-      iat: now, exp: now + 3600, email_verified: true, email: 'google@example.test',
+      iat: now, exp: now + 3600, email_verified: true, email: 'google@gmail.com',
       name: 'Google Player', ...overrides
     })).toString('base64url');
     const signature = Buffer.from(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', keys.privateKey, Buffer.from(head + '.' + payload)));
@@ -234,10 +229,13 @@ test('Google verifies the issuer, audience, expiry, email and signature and reus
     await token({ email_verified: false })
   ]) assert.equal((await api('auth/google', 'POST', { credential })).statusCode, 401);
 
-  const first = await api('auth/google', 'POST', { credential: await token(), role: 'admin' });
+  assert.equal((await api('auth/google', 'POST', { credential: await token() })).requires_password, true);
+  assert.equal((await api('auth/session')).user, null);
+  assert.equal((await api('auth/google', 'POST', { credential: await token({email:'other@example.test'}), password: randomUUID() })).statusCode, 403);
+  const first = await api('auth/google', 'POST', { credential: await token(), role: 'admin', password: randomUUID() });
   assert.equal(first.statusCode, 200);
   assert.equal(first.user.role, 'member');
-  assert.equal(first.user.email, 'google@example.test');
+  assert.equal(first.user.email, 'google@gmail.com');
   assert.equal((await api('bootstrap')).settings.google_client_id, clientId);
   const again = await api('auth/google', 'POST', { credential: await token({ name: 'Updated' }) });
   assert.equal(again.user.id, first.user.id);
